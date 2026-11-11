@@ -34,9 +34,18 @@ func TestE2E(t *testing.T) {
 	}
 	repoRoot := strings.TrimSpace(string(out))
 
-	// Run example. We assume 'clix' is already in the PATH.
+	// Build clix binary
+	tempDir := t.TempDir()
+	buildCmd := exec.Command("go", "build", "-o", filepath.Join(tempDir, "clix"), ".")
+	buildCmd.Dir = repoRoot
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build clix: %v\nOutput: %s", err, out)
+	}
+
+	// Run example.
 	shfmtExample := filepath.Join(repoRoot, "examples", "shfmt")
 	runCmd := exec.Command(shfmtExample, "--version")
+	runCmd.Env = append(os.Environ(), "PATH="+tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if out, err := runCmd.CombinedOutput(); err != nil {
 		// In some environments, this might fail due to Docker rate limits.
 		// We log the error but it might cause the test to fail.
