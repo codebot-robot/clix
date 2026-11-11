@@ -1,6 +1,6 @@
 module github.com/gke-labs/clix
 
-go 1.24.11
+go 1.27.4
 
 require (
 	github.com/google/go-containerregistry v0.20.7
