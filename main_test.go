@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
 func TestRun(t *testing.T) {
@@ -328,6 +330,51 @@ func TestBuildDockerArgs(t *testing.T) {
 	}
 	if !foundMount {
 		t.Errorf("Expected mount for %s with host path containing %s, got args: %v", cacheMountDest, expectedHostPathPart, cmdArgs)
+	}
+
+	// 4. Mount read-only table cases
+	mountTests := []struct {
+		name         string
+		mounts       []Mount
+		expectedArgs []string
+	}{
+		{
+			name: "Read-only mount",
+			mounts: []Mount{
+				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: true},
+			},
+			expectedArgs: []string{"-v", "/host/path:/sandbox/path:ro"},
+		},
+		{
+			name: "Read-write mount",
+			mounts: []Mount{
+				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: false},
+			},
+			expectedArgs: []string{"-v", "/host/path:/sandbox/path"},
+		},
+	}
+
+	for _, tt := range mountTests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Script{
+				Image:  "python:3.11",
+				Mounts: tt.mounts,
+			}
+			cmdArgs, err := buildDockerArgs(s, args, false)
+			if err != nil {
+				t.Fatalf("buildDockerArgs failed: %v", err)
+			}
+			found := false
+			for i := 0; i < len(cmdArgs)-1; i++ {
+				if cmdArgs[i] == tt.expectedArgs[0] && cmdArgs[i+1] == tt.expectedArgs[1] {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Expected args %v in cmdArgs %v", tt.expectedArgs, cmdArgs)
+			}
+		})
 	}
 }
 
@@ -828,4 +875,154 @@ func TestHelperDockerProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	os.Exit(0)
+}
+
+func TestRunUnknownFields(t *testing.T) {
+	var execCalled bool
+	oldExecCommand := execCommand
+	execCommand = func(name string, arg ...string) *exec.Cmd {
+		execCalled = true
+		return oldExecCommand(name, arg...)
+	}
+	defer func() { execCommand = oldExecCommand }()
+
+	tests := []struct {
+		name          string
+		scriptContent string
+		expectedError string
+	}{
+		{
+			name: "Unknown top-level key",
+			scriptContent: `#!/usr/bin/env clix
+image: alpine
+unknownField: foo
+`,
+			expectedError: "unknownField",
+		},
+		{
+			name: "Unknown key inside mount",
+			scriptContent: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: /tmp
+  sandboxPath: /tmp
+  unknownMountKey: bar
+`,
+			expectedError: "unknownMountKey",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			execCalled = false
+			tmpDir := t.TempDir()
+			scriptPath := filepath.Join(tmpDir, "script.yaml")
+			if err := os.WriteFile(scriptPath, []byte(tt.scriptContent), 0755); err != nil {
+				t.Fatalf("Failed to write script: %v", err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			stdin := strings.NewReader("")
+			err := run(stdin, &stdout, &stderr, []string{"clix", scriptPath})
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.expectedError) {
+				t.Errorf("expected error to contain %q, got %q", tt.expectedError, err.Error())
+			}
+			if execCalled {
+				t.Errorf("expected no command to be executed, but execCommand was called")
+			}
+		})
+	}
+}
+
+func TestExamplesParse(t *testing.T) {
+	entries, err := os.ReadDir("examples")
+	if err != nil {
+		t.Fatalf("Failed to read examples dir: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		t.Run(entry.Name(), func(t *testing.T) {
+			path := filepath.Join("examples", entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("Failed to read %s: %v", path, err)
+			}
+			var script Script
+			if err := yaml.UnmarshalStrict(data, &script); err != nil {
+				t.Errorf("Failed to strictly unmarshal %s: %v", path, err)
+			}
+		})
+	}
+}
+
+func TestRunReadOnlyMount(t *testing.T) {
+	tests := []struct {
+		name          string
+		scriptContent string
+		expectedArg   string
+	}{
+		{
+			name: "readOnly true in yaml",
+			scriptContent: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: /tmp/host
+  sandboxPath: /tmp/sandbox
+  readOnly: true
+`,
+			expectedArg: "/tmp/host:/tmp/sandbox:ro",
+		},
+		{
+			name: "readOnly false in yaml",
+			scriptContent: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: /tmp/host
+  sandboxPath: /tmp/sandbox
+  readOnly: false
+`,
+			expectedArg: "/tmp/host:/tmp/sandbox",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedArgs []string
+			oldExecCommand := execCommand
+			execCommand = func(name string, arg ...string) *exec.Cmd {
+				capturedArgs = arg
+				return fakeExecCommand(name, arg...)
+			}
+			defer func() { execCommand = oldExecCommand }()
+
+			tmpDir := t.TempDir()
+			scriptPath := filepath.Join(tmpDir, "script.yaml")
+			if err := os.WriteFile(scriptPath, []byte(tt.scriptContent), 0755); err != nil {
+				t.Fatalf("Failed to write script: %v", err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			stdin := strings.NewReader("")
+			if err := run(stdin, &stdout, &stderr, []string{"clix", scriptPath}); err != nil {
+				t.Fatalf("run failed: %v", err)
+			}
+
+			foundMount := false
+			for i := 0; i < len(capturedArgs)-1; i++ {
+				if capturedArgs[i] == "-v" && capturedArgs[i+1] == tt.expectedArg {
+					foundMount = true
+					break
+				}
+			}
+			if !foundMount {
+				t.Errorf("expected mount arg %q in %v", tt.expectedArg, capturedArgs)
+			}
+		})
+	}
 }

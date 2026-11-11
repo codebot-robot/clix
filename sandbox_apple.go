@@ -76,7 +76,11 @@ func buildAppleContainerArgs(script Script, args []string, isTerm bool) ([]strin
 	}
 
 	for _, m := range resolvedMounts {
-		cmdArgs = append(cmdArgs, "-v", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
+		if m.ReadOnly {
+			cmdArgs = append(cmdArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", m.HostPath, m.SandboxPath))
+		} else {
+			cmdArgs = append(cmdArgs, "-v", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
+		}
 	}
 
 	for _, e := range script.Env {

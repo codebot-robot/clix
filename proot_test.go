@@ -58,3 +58,22 @@ entrypoint: /hello
 		t.Errorf("unexpected output: %q", stdout.String())
 	}
 }
+
+func TestProotReadOnlyMountRejected(t *testing.T) {
+	sandbox := &ProotSandbox{}
+	script := Script{
+		Image: "test-image",
+		Mounts: []Mount{
+			{HostPath: "/host", SandboxPath: "/sandbox", ReadOnly: true},
+		},
+	}
+
+	err := sandbox.Run(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hi"})
+	if err == nil {
+		t.Fatalf("expected error for read-only mount in proot, got nil")
+	}
+	expected := "read-only mounts are not supported by the proot sandbox"
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("expected error %q, got %q", expected, err.Error())
+	}
+}

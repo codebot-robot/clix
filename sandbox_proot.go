@@ -24,6 +24,12 @@ import (
 type ProotSandbox struct{}
 
 func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
+	for _, m := range script.Mounts {
+		if m.ReadOnly {
+			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
+		}
+	}
+
 	rootPath := script.Image
 	if rootPath == "" {
 		return fmt.Errorf("ProotSandbox requires an image path (used as root directory)")
