@@ -74,12 +74,19 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 	// We start at root of the new root
 	cmd.Dir = "/"
 
-	// Handle environment variables
-	if len(script.Env) > 0 {
-		cmd.Env = os.Environ()
-		for _, env := range script.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", env.Name, env.Value))
-		}
+	// Handle environment variables. The sandboxed workload must NOT inherit
+	// the host environment: start from a minimal base and add only the
+	// variables explicitly declared in the script's env: block. This matches
+	// the docker backend, which only forwards explicit -e flags.
+	cmd.Env = []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+	}
+	if term := os.Getenv("TERM"); term != "" {
+		cmd.Env = append(cmd.Env, "TERM="+term)
+	}
+	for _, env := range script.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", env.Name, env.Value))
 	}
 
 	if err := cmd.Run(); err != nil {

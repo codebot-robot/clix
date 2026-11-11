@@ -69,13 +69,24 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	// We start at root of the new root
 	cmd.Dir = "/"
 
-	// We are not handling environment variables here yet, or mounts.
+	// We are not handling mounts here yet.
 	// Issue says: "leave a lot of functionality not supported"
 	if len(script.Mounts) > 0 {
 		return fmt.Errorf("mounts are not supported in chroot sandbox")
 	}
-	if len(script.Env) > 0 {
-		return fmt.Errorf("environment variables are not supported in chroot sandbox")
+
+	// The sandboxed workload must NOT inherit the host environment: start
+	// from a minimal base and add only the variables explicitly declared in
+	// the script's env: block.
+	cmd.Env = []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+	}
+	if term := os.Getenv("TERM"); term != "" {
+		cmd.Env = append(cmd.Env, "TERM="+term)
+	}
+	for _, env := range script.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", env.Name, env.Value))
 	}
 
 	if err := cmd.Run(); err != nil {
