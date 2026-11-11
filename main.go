@@ -66,6 +66,7 @@ type EnvVar struct {
 type Mount struct {
 	HostPath    string `json:"hostPath"`
 	SandboxPath string `json:"sandboxPath,omitempty"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
 }
 
 type GoConfig struct {
@@ -94,7 +95,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	}
 
 	var script Script
-	if err := yaml.Unmarshal(data, &script); err != nil {
+	if err := yaml.UnmarshalStrict(data, &script); err != nil {
 		return fmt.Errorf("error parsing script file: %w", err)
 	}
 

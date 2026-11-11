@@ -79,7 +79,11 @@ func buildDockerArgs(script Script, args []string, isTerm bool) ([]string, error
 	}
 
 	for _, m := range resolvedMounts {
-		cmdArgs = append(cmdArgs, "-v", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
+		v := fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath)
+		if m.ReadOnly {
+			v += ":ro"
+		}
+		cmdArgs = append(cmdArgs, "-v", v)
 	}
 
 	for _, e := range script.Env {
