@@ -304,7 +304,11 @@ func TestBuildDockerArgs(t *testing.T) {
 }
 
 func TestBuildImage(t *testing.T) {
-	execCommand = fakeExecCommand
+	var recorded [][]string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		recorded = append(recorded, append([]string{name}, args...))
+		return fakeExecCommand(name, args...)
+	}
 	defer func() { execCommand = exec.Command }()
 
 	var stdout, stderr bytes.Buffer
@@ -338,6 +342,111 @@ func TestBuildImage(t *testing.T) {
 	}
 	if !strings.Contains(outStr, "Building image") {
 		t.Errorf("Expected building message, got: %s", outStr)
+	}
+
+	var lsRemoteCmd, cloneCmd []string
+	for _, cmd := range recorded {
+		if len(cmd) > 1 && cmd[0] == "git" {
+			switch cmd[1] {
+			case "ls-remote":
+				lsRemoteCmd = cmd
+			case "clone":
+				cloneCmd = cmd
+			}
+		}
+	}
+	if lsRemoteCmd == nil {
+		t.Fatal("git ls-remote was not executed")
+	}
+	assertDashDashBeforeRepo(t, lsRemoteCmd, build.Git)
+
+	if cloneCmd == nil {
+		t.Fatal("git clone was not executed")
+	}
+	assertDashDashBeforeRepo(t, cloneCmd, build.Git)
+}
+
+func TestBuildImage_WithBranch(t *testing.T) {
+	var recorded [][]string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		recorded = append(recorded, append([]string{name}, args...))
+		return fakeExecCommand(name, args...)
+	}
+	defer func() { execCommand = exec.Command }()
+
+	var stdout, stderr bytes.Buffer
+	stdin := strings.NewReader("")
+
+	build := &BuildConfig{
+		Git:    "https://github.com/example/repo",
+		Branch: "feature-branch",
+	}
+
+	_, err := buildImage(stdin, &stdout, &stderr, build, "test-script.yaml")
+	if err != nil {
+		t.Fatalf("buildImage failed: %v", err)
+	}
+
+	var lsRemoteCmd, cloneCmd []string
+	for _, cmd := range recorded {
+		if len(cmd) > 1 && cmd[0] == "git" {
+			switch cmd[1] {
+			case "ls-remote":
+				lsRemoteCmd = cmd
+			case "clone":
+				cloneCmd = cmd
+			}
+		}
+	}
+	if lsRemoteCmd == nil {
+		t.Fatal("git ls-remote was not executed")
+	}
+	assertDashDashBeforeRepo(t, lsRemoteCmd, build.Git)
+
+	if cloneCmd == nil {
+		t.Fatal("git clone was not executed")
+	}
+	assertDashDashBeforeRepo(t, cloneCmd, build.Git)
+}
+
+func TestBuildImage_DashRepo(t *testing.T) {
+	var recorded [][]string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		recorded = append(recorded, append([]string{name}, args...))
+		return fakeExecCommand(name, args...)
+	}
+	defer func() { execCommand = exec.Command }()
+
+	var stdout, stderr bytes.Buffer
+	stdin := strings.NewReader("")
+
+	build := &BuildConfig{
+		Git: "-invalid-repo",
+	}
+
+	_, err := buildImage(stdin, &stdout, &stderr, build, "test-script.yaml")
+	if err == nil {
+		t.Fatal("expected error for build.git starting with '-', got nil")
+	}
+	if len(recorded) != 0 {
+		t.Errorf("expected no commands to be executed, but got: %v", recorded)
+	}
+}
+
+func assertDashDashBeforeRepo(t *testing.T, cmd []string, repo string) {
+	t.Helper()
+	repoIdx := -1
+	for i, arg := range cmd {
+		if arg == repo {
+			repoIdx = i
+			break
+		}
+	}
+	if repoIdx == -1 {
+		t.Fatalf("repo %q not found in command: %v", repo, cmd)
+	}
+	if repoIdx == 0 || cmd[repoIdx-1] != "--" {
+		t.Errorf("expected '--' immediately before repo %q, got: %v", repo, cmd)
 	}
 }
 

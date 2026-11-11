@@ -196,6 +196,9 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	if build.Git == "" {
 		return "", fmt.Errorf("build.git is required")
 	}
+	if strings.HasPrefix(build.Git, "-") {
+		return "", fmt.Errorf("build.git cannot start with '-'")
+	}
 
 	log(1, "Building image from %s", build.Git)
 
@@ -250,7 +253,7 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	if build.Branch != "" {
 		cloneArgs = append(cloneArgs, "--branch", build.Branch)
 	}
-	cloneArgs = append(cloneArgs, build.Git, tempDir)
+	cloneArgs = append(cloneArgs, "--", build.Git, tempDir)
 
 	fmt.Fprintf(stderr, "Cloning %s...\n", build.Git)
 	cmd := execCommand("git", cloneArgs...)
@@ -292,7 +295,7 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 
 func getRemoteHead(repo, branch string) (string, error) {
 	log(2, "Getting remote head for %s (branch: %s)", repo, branch)
-	args := []string{"ls-remote", repo}
+	args := []string{"ls-remote", "--", repo}
 	if branch != "" {
 		args = append(args, branch)
 	} else {
