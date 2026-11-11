@@ -16,6 +16,7 @@ package main
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,7 +66,17 @@ func prepareRootFS(imageRef string) (string, string, func(), error) {
 	return tmpDir, imageSHA, cleanup, nil
 }
 
-func untar(r io.Reader, dest string) error {
+func untar(r io.Reader, dest string) (retErr error) {
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil && retErr == nil {
+			retErr = closeErr
+		}
+	}()
+
 	tr := tar.NewReader(r)
 	for {
 		header, err := tr.Next()
@@ -76,43 +87,83 @@ func untar(r io.Reader, dest string) error {
 			return err
 		}
 
-		path := filepath.Join(dest, header.Name)
-
-		// Basic zip-slip protection
-		if !strings.HasPrefix(path, filepath.Clean(dest)) {
-			return fmt.Errorf("illegal file path in image: %s", path)
+		name := strings.TrimPrefix(header.Name, "./")
+		name = strings.TrimPrefix(name, "/")
+		if name == "" || name == "." {
+			continue
+		}
+		if !filepath.IsLocal(name) {
+			return fmt.Errorf("illegal entry name %q", header.Name)
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(path, 0755); err != nil {
+			if err := extractDir(root, name); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			// Ensure parent dir exists
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			if err := extractReg(root, name, header, tr); err != nil {
 				return err
 			}
-			f, err := os.Create(path)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-			os.Chmod(path, os.FileMode(header.Mode))
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-				return err
-			}
-			if err := os.Symlink(header.Linkname, path); err != nil {
+			if err := extractSymlink(root, name, header); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func removeNonDir(root *os.Root, name string) error {
+	fi, err := root.Lstat(name)
+	if err == nil {
+		if !fi.IsDir() {
+			return root.Remove(name)
+		}
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func extractDir(root *os.Root, name string) error {
+	return root.MkdirAll(name, 0755)
+}
+
+func extractReg(root *os.Root, name string, header *tar.Header, r io.Reader) error {
+	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	if err := removeNonDir(root, name); err != nil {
+		return err
+	}
+	perm := header.FileInfo().Mode().Perm()
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(f, r)
+	chmodErr := f.Chmod(perm)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if chmodErr != nil {
+		return chmodErr
+	}
+	return closeErr
+}
+
+func extractSymlink(root *os.Root, name string, header *tar.Header) error {
+	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	if err := removeNonDir(root, name); err != nil {
+		return err
+	}
+	return root.Symlink(header.Linkname, name)
 }
 
 func resolveMounts(mounts []Mount, imageSHA string) ([]Mount, error) {
