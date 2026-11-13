@@ -59,11 +59,24 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	// Set SysProcAttr for chroot
-	// We also need to set Credential/Setsid/etc?
-	// Ideally we should drop privileges if we are root, but that's out of scope for now.
+	// Set SysProcAttr for chroot.
+	// The workload must not inherit our euid 0 / CAP_SYS_CHROOT or it can
+	// trivially double-chroot back out to the host root. Put it in its own
+	// user + mount namespace mapped to a non-root in-namespace uid: the
+	// pre-exec child still holds CAP_SYS_CHROOT in the new ns (so the
+	// Chroot below succeeds), but execve() with a non-zero euid drops all
+	// capabilities, so the workload itself cannot chroot(2) again.
+	const sandboxID = 65534
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Chroot: realRoot,
+		Chroot:     realRoot,
+		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{
+			{ContainerID: sandboxID, HostID: os.Getuid(), Size: 1},
+		},
+		GidMappings: []syscall.SysProcIDMap{
+			{ContainerID: sandboxID, HostID: os.Getgid(), Size: 1},
+		},
+		GidMappingsEnableSetgroups: false,
 	}
 
 	// We start at root of the new root
