@@ -30,11 +30,11 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
 	}
 
-	realRoot, _, cleanup, err := prepareRootFS(rootPath)
+	rootFS, err := prepareRootFS(rootPath)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer rootFS.cleanup()
 
 	// Determine the command to run
 	var cmdPath string
@@ -68,7 +68,7 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	// capabilities, so the workload itself cannot chroot(2) again.
 	const sandboxID = 65534
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Chroot:     realRoot,
+		Chroot:     rootFS.dir,
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWIPC,
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: sandboxID, HostID: os.Getuid(), Size: 1},
@@ -88,19 +88,7 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 		return fmt.Errorf("mounts are not supported in chroot sandbox")
 	}
 
-	// The sandboxed workload must NOT inherit the host environment: start
-	// from a minimal base and add only the variables explicitly declared in
-	// the script's env: block.
-	cmd.Env = []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME=/root",
-	}
-	if term := os.Getenv("TERM"); term != "" {
-		cmd.Env = append(cmd.Env, "TERM="+term)
-	}
-	for _, env := range script.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", env.Name, env.Value))
-	}
+	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

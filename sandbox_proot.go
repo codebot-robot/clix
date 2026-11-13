@@ -29,11 +29,11 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 		return fmt.Errorf("ProotSandbox requires an image path (used as root directory)")
 	}
 
-	realRoot, imageSHA, cleanup, err := prepareRootFS(rootPath)
+	rootFS, err := prepareRootFS(rootPath)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer rootFS.cleanup()
 
 	// Determine the command to run
 	var cmdPath string
@@ -52,13 +52,13 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 		}
 	}
 
-	resolvedMounts, err := resolveMounts(script.Mounts, imageSHA)
+	resolvedMounts, err := resolveMounts(script.Mounts, rootFS.imageSHA)
 	if err != nil {
 		return fmt.Errorf("error resolving mounts: %w", err)
 	}
 
 	// proot -r realRoot [-b host:guest ...] cmdArgs
-	prootArgs := []string{"-r", realRoot}
+	prootArgs := []string{"-r", rootFS.dir}
 	for _, m := range resolvedMounts {
 		prootArgs = append(prootArgs, "-b", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
 	}
@@ -74,20 +74,7 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 	// We start at root of the new root
 	cmd.Dir = "/"
 
-	// Handle environment variables. The sandboxed workload must NOT inherit
-	// the host environment: start from a minimal base and add only the
-	// variables explicitly declared in the script's env: block. This matches
-	// the docker backend, which only forwards explicit -e flags.
-	cmd.Env = []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME=/root",
-	}
-	if term := os.Getenv("TERM"); term != "" {
-		cmd.Env = append(cmd.Env, "TERM="+term)
-	}
-	for _, env := range script.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", env.Name, env.Value))
-	}
+	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
