@@ -300,15 +300,40 @@ func TestBuildDockerArgs(t *testing.T) {
 		t.Fatalf("buildDockerArgs failed: %v", err)
 	}
 	// Check basics
-	// cmdArgs: [run -i -w ... image args...]
+	// cmdArgs: [run --rm -i -w ... image args...]
+	if len(cmdArgs) < 3 || cmdArgs[0] != "run" || cmdArgs[1] != "--rm" || cmdArgs[2] != "-i" {
+		t.Errorf("Expected cmdArgs to start with [run, --rm, -i], got %v", cmdArgs)
+	}
+	foundRun := false
+	foundRm := false
 	foundImage := false
 	for _, arg := range cmdArgs {
+		if arg == "run" {
+			foundRun = true
+		}
+		if arg == "--rm" {
+			foundRm = true
+		}
 		if arg == "python:3.11" {
 			foundImage = true
 		}
 	}
+	if !foundRun {
+		t.Errorf("Expected 'run' in args, got %v", cmdArgs)
+	}
+	if !foundRm {
+		t.Errorf("Expected '--rm' in args, got %v", cmdArgs)
+	}
 	if !foundImage {
 		t.Errorf("Expected image python:3.11 in args, got %v", cmdArgs)
+	}
+
+	termArgs, err := buildDockerArgs(script, args, true)
+	if err != nil {
+		t.Fatalf("buildDockerArgs with isTerm=true failed: %v", err)
+	}
+	if len(termArgs) < 4 || termArgs[0] != "run" || termArgs[1] != "--rm" || termArgs[2] != "-i" || termArgs[3] != "-t" {
+		t.Errorf("Expected termArgs to start with [run, --rm, -i, -t], got %v", termArgs)
 	}
 
 	// 2. Python cache enabled via explicit mounts and env
