@@ -297,7 +297,7 @@ func getRemoteHead(repo, branch string) (string, error) {
 	log(2, "Getting remote head for %s (branch: %s)", repo, branch)
 	args := []string{"ls-remote", "--", repo}
 	if branch != "" {
-		args = append(args, branch)
+		args = append(args, "refs/heads/"+branch, "refs/tags/"+branch)
 	} else {
 		args = append(args, "HEAD")
 	}
@@ -309,15 +309,48 @@ func getRemoteHead(repo, branch string) (string, error) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 || lines[0] == "" {
-		return "", fmt.Errorf("no output from git ls-remote")
+	var selectedHash string
+	if branch != "" {
+		var tagHash string
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			if fields[1] == "refs/heads/"+branch {
+				selectedHash = fields[0]
+				break
+			}
+			if fields[1] == "refs/tags/"+branch && tagHash == "" {
+				tagHash = fields[0]
+			}
+		}
+		if selectedHash == "" {
+			selectedHash = tagHash
+		}
+		if selectedHash == "" {
+			return "", fmt.Errorf("branch %q not found", branch)
+		}
+	} else {
+		if len(lines) == 0 || lines[0] == "" {
+			return "", fmt.Errorf("no output from git ls-remote")
+		}
+		fields := strings.Fields(lines[0])
+		if len(fields) == 0 {
+			return "", fmt.Errorf("could not parse git ls-remote output")
+		}
+		selectedHash = fields[0]
 	}
-	fields := strings.Fields(lines[0])
-	if len(fields) == 0 {
-		return "", fmt.Errorf("could not parse git ls-remote output")
+
+	if len(selectedHash) != 40 && len(selectedHash) != 64 {
+		return "", fmt.Errorf("invalid commit hash %q: must be 40 or 64 hexadecimal characters", selectedHash)
 	}
-	log(2, "Remote head for %s is %s", repo, fields[0])
-	return fields[0], nil
+	if _, err := hex.DecodeString(selectedHash); err != nil {
+		return "", fmt.Errorf("invalid commit hash %q: %w", selectedHash, err)
+	}
+
+	log(2, "Remote head for %s is %s", repo, selectedHash)
+	return selectedHash, nil
 }
 
 func imageExists(tag string) (bool, error) {

@@ -326,12 +326,11 @@ func TestBuildImage(t *testing.T) {
 
 	// Check if image tag is correct
 	// Hash of https://github.com/example/repo
-	// We expect clix-repo-<hash>:abcdef1234567890
-	// We expect clix-test-script-<hash>:abcdef1234567890
+	// We expect clix-test-script-<hash>:0123456789abcdef0123456789abcdef01234567
 	if !strings.HasPrefix(imageTag, "clix-test-script-") {
 		t.Errorf("Unexpected image tag prefix: %s", imageTag)
 	}
-	if !strings.HasSuffix(imageTag, ":abcdef1234567890") {
+	if !strings.HasSuffix(imageTag, ":0123456789abcdef0123456789abcdef01234567") {
 		t.Errorf("Unexpected image tag suffix: %s", imageTag)
 	}
 
@@ -495,11 +494,189 @@ func TestBuildImage_Exists(t *testing.T) {
 
 	// Tag should still be returned
 
-	// We expect clix-test-script-<hash>:abcdef1234567890
+	// We expect clix-test-script-<hash>:0123456789abcdef0123456789abcdef01234567
 	if !strings.HasPrefix(imageTag, "clix-test-script-") {
 
 		t.Errorf("Unexpected image tag: %s", imageTag)
 
 	}
 
+}
+
+func fakeLsRemoteOutput(output string, recorded *[][]string) func(string, ...string) *exec.Cmd {
+	return func(name string, args ...string) *exec.Cmd {
+		if recorded != nil {
+			*recorded = append(*recorded, append([]string{name}, args...))
+		}
+		cs := []string{"-test.run=TestHelperLsRemoteProcess", "--"}
+		cs = append(cs, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_LS_REMOTE_HELPER_PROCESS=1", "LS_REMOTE_OUTPUT="+output)
+		return cmd
+	}
+}
+
+func TestHelperLsRemoteProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_LS_REMOTE_HELPER_PROCESS") != "1" {
+		return
+	}
+	fmt.Print(os.Getenv("LS_REMOTE_OUTPUT"))
+	os.Exit(0)
+}
+
+func TestGetRemoteHead(t *testing.T) {
+	tests := []struct {
+		name         string
+		branch       string
+		cannedOutput string
+		wantHash     string
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:         "both a/main and main present with a/main first",
+			branch:       "main",
+			cannedOutput: "1111111111111111111111111111111111111111\trefs/heads/a/main\n2222222222222222222222222222222222222222\trefs/heads/main\n",
+			wantHash:     "2222222222222222222222222222222222222222",
+		},
+		{
+			name:         "both a/main and main present with main first",
+			branch:       "main",
+			cannedOutput: "2222222222222222222222222222222222222222\trefs/heads/main\n1111111111111111111111111111111111111111\trefs/heads/a/main\n",
+			wantHash:     "2222222222222222222222222222222222222222",
+		},
+		{
+			name:         "tag only",
+			branch:       "v1.0.0",
+			cannedOutput: "3333333333333333333333333333333333333333\trefs/tags/v1.0.0\n",
+			wantHash:     "3333333333333333333333333333333333333333",
+		},
+		{
+			name:         "both branch and tag present, tag first, branch preferred",
+			branch:       "release",
+			cannedOutput: "4444444444444444444444444444444444444444\trefs/tags/release\n5555555555555555555555555555555555555555\trefs/heads/release\n",
+			wantHash:     "5555555555555555555555555555555555555555",
+		},
+		{
+			name:         "both branch and tag present, branch first, branch preferred",
+			branch:       "release",
+			cannedOutput: "5555555555555555555555555555555555555555\trefs/heads/release\n4444444444444444444444444444444444444444\trefs/tags/release\n",
+			wantHash:     "5555555555555555555555555555555555555555",
+		},
+		{
+			name:         "no match with different branch",
+			branch:       "main",
+			cannedOutput: "1111111111111111111111111111111111111111\trefs/heads/other\n",
+			wantErr:      true,
+			errContains:  "main",
+		},
+		{
+			name:         "no match with suffix only (a/main)",
+			branch:       "main",
+			cannedOutput: "1111111111111111111111111111111111111111\trefs/heads/a/main\n",
+			wantErr:      true,
+			errContains:  "main",
+		},
+		{
+			name:         "no match with empty output",
+			branch:       "main",
+			cannedOutput: "",
+			wantErr:      true,
+			errContains:  "main",
+		},
+		{
+			name:         "non-hex first field",
+			branch:       "main",
+			cannedOutput: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\trefs/heads/main\n",
+			wantErr:      true,
+		},
+		{
+			name:         "hash too short (16 hex chars)",
+			branch:       "main",
+			cannedOutput: "abcdef1234567890\trefs/heads/main\n",
+			wantErr:      true,
+		},
+		{
+			name:         "hash too long (41 hex chars)",
+			branch:       "main",
+			cannedOutput: "0123456789abcdef0123456789abcdef012345678\trefs/heads/main\n",
+			wantErr:      true,
+		},
+		{
+			name:         "64-character hex hash (SHA-256)",
+			branch:       "main",
+			cannedOutput: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\trefs/heads/main\n",
+			wantHash:     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldExec := execCommand
+			defer func() { execCommand = oldExec }()
+
+			var recorded [][]string
+			execCommand = fakeLsRemoteOutput(tc.cannedOutput, &recorded)
+
+			got, err := getRemoteHead("https://example.com/repo", tc.branch)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (hash=%q)", got)
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error containing %q, got: %v", tc.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantHash {
+				t.Errorf("got hash %q, want %q", got, tc.wantHash)
+			}
+
+			if len(recorded) != 1 {
+				t.Fatalf("expected 1 command executed, got %d", len(recorded))
+			}
+			cmd := recorded[0]
+			expectedArgs := []string{"git", "ls-remote", "--", "https://example.com/repo", "refs/heads/" + tc.branch, "refs/tags/" + tc.branch}
+			if len(cmd) != len(expectedArgs) {
+				t.Fatalf("expected command args %v, got %v", expectedArgs, cmd)
+			}
+			for i := range expectedArgs {
+				if cmd[i] != expectedArgs[i] {
+					t.Errorf("arg %d: expected %q, got %q", i, expectedArgs[i], cmd[i])
+				}
+			}
+		})
+	}
+
+	t.Run("empty branch resolves HEAD", func(t *testing.T) {
+		oldExec := execCommand
+		defer func() { execCommand = oldExec }()
+
+		var recorded [][]string
+		cannedOutput := "2222222222222222222222222222222222222222\tHEAD\n"
+		execCommand = fakeLsRemoteOutput(cannedOutput, &recorded)
+
+		got, err := getRemoteHead("https://example.com/repo", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "2222222222222222222222222222222222222222" {
+			t.Errorf("got hash %q, want 2222222222222222222222222222222222222222", got)
+		}
+		if len(recorded) != 1 {
+			t.Fatalf("expected 1 command, got %d", len(recorded))
+		}
+		expectedArgs := []string{"git", "ls-remote", "--", "https://example.com/repo", "HEAD"}
+		if len(recorded[0]) != len(expectedArgs) {
+			t.Fatalf("expected args %v, got %v", expectedArgs, recorded[0])
+		}
+		for i := range expectedArgs {
+			if recorded[0][i] != expectedArgs[i] {
+				t.Errorf("arg %d: expected %q, got %q", i, expectedArgs[i], recorded[0][i])
+			}
+		}
+	})
 }
