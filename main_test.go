@@ -111,13 +111,19 @@ func TestResolveMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get user home: %v", err)
 	}
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("failed to get user cache: %v", err)
+	}
 
 	tests := []struct {
-		name      string
-		input     []Mount
-		imageSHA  string
-		scriptKey string
-		expected  []Mount
+		name        string
+		input       []Mount
+		imageSHA    string
+		scriptKey   string
+		expected    []Mount
+		wantErr     bool
+		errContains string
 	}{
 		{
 			name: "Home directory expansion",
@@ -160,11 +166,64 @@ func TestResolveMounts(t *testing.T) {
 			imageSHA:  "abc",
 			scriptKey: "key1",
 		},
+		{
+			name:        "Rule 1: host path not absolute rejected",
+			input:       []Mount{{HostPath: "relative/path"}},
+			wantErr:     true,
+			errContains: "relative/path",
+		},
+		{
+			name:        "Rule 2: cache path escaping cache directory rejected",
+			input:       []Mount{{HostPath: "${cacheDir}/../escape"}},
+			imageSHA:    "abc",
+			scriptKey:   "key1",
+			wantErr:     true,
+			errContains: "${cacheDir}/../escape",
+		},
+		{
+			name:        "Rule 3: sandbox path not absolute rejected",
+			input:       []Mount{{HostPath: "/tmp", SandboxPath: "relative/sandbox"}},
+			wantErr:     true,
+			errContains: "relative/sandbox",
+		},
+		{
+			name:        "Rule 4: host path containing colon rejected",
+			input:       []Mount{{HostPath: "/tmp/has:colon", SandboxPath: "/tmp"}},
+			wantErr:     true,
+			errContains: "/tmp/has:colon",
+		},
+		{
+			name:        "Rule 4: sandbox path containing colon rejected",
+			input:       []Mount{{HostPath: "/tmp", SandboxPath: "/sandbox:colon"}},
+			wantErr:     true,
+			errContains: "/sandbox:colon",
+		},
+		{
+			name:      "Redundant .. inside cache directory accepted and cleaned",
+			input:     []Mount{{HostPath: "${cacheDir}/sub/../clean"}},
+			imageSHA:  "abc",
+			scriptKey: "key1",
+			expected: []Mount{
+				{
+					HostPath:    filepath.Join(userCache, "clix", "cache", "abc", "key1", "clean"),
+					SandboxPath: filepath.Join(userCache, "clix", "cache", "abc", "key1", "clean"),
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := resolveMounts(tt.input, tt.imageSHA, tt.scriptKey)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("resolveMounts succeeded, expected error")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("expected error containing %q, got: %v", tt.errContains, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("resolveMounts failed: %v", err)
 			}
