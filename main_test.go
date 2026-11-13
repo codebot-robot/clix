@@ -16,6 +16,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -111,10 +113,11 @@ func TestResolveMounts(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		input    []Mount
-		imageSHA string
-		expected []Mount
+		name      string
+		input     []Mount
+		imageSHA  string
+		scriptKey string
+		expected  []Mount
 	}{
 		{
 			name: "Home directory expansion",
@@ -152,26 +155,28 @@ func TestResolveMounts(t *testing.T) {
 			},
 		},
 		{
-			name:     "Cache directory expansion",
-			input:    []Mount{{HostPath: "${cacheDir}/pycache"}, {HostPath: "{cacheDir}/oldcache"}},
-			imageSHA: "abc",
+			name:      "Cache directory expansion",
+			input:     []Mount{{HostPath: "${cacheDir}/pycache"}, {HostPath: "{cacheDir}/oldcache"}},
+			imageSHA:  "abc",
+			scriptKey: "key1",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveMounts(tt.input, tt.imageSHA)
+			got, err := resolveMounts(tt.input, tt.imageSHA, tt.scriptKey)
 			if err != nil {
 				t.Fatalf("resolveMounts failed: %v", err)
 			}
 
 			if tt.name == "Cache directory expansion" {
+				expectedPathPart := filepath.Join("abc", "key1")
 				for _, m := range got {
 					if strings.Contains(m.HostPath, "cacheDir") {
 						t.Errorf("Expected cacheDir to be expanded, got %q", m.HostPath)
 					}
-					if !strings.Contains(m.HostPath, "abc") {
-						t.Errorf("Expected host path to contain image SHA 'abc', got %q", m.HostPath)
+					if !strings.Contains(m.HostPath, expectedPathPart) {
+						t.Errorf("Expected host path to contain %q, got %q", expectedPathPart, m.HostPath)
 					}
 				}
 				return
@@ -191,6 +196,29 @@ func TestResolveMounts(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("Key isolation and repeatability", func(t *testing.T) {
+		mounts := []Mount{{HostPath: "${cacheDir}/data"}}
+		resKey1A, err := resolveMounts(mounts, "abc", "key1")
+		if err != nil {
+			t.Fatalf("resolveMounts failed: %v", err)
+		}
+		resKey1B, err := resolveMounts(mounts, "abc", "key1")
+		if err != nil {
+			t.Fatalf("resolveMounts failed: %v", err)
+		}
+		resKey2, err := resolveMounts(mounts, "abc", "key2")
+		if err != nil {
+			t.Fatalf("resolveMounts failed: %v", err)
+		}
+
+		if resKey1A[0].HostPath != resKey1B[0].HostPath {
+			t.Errorf("expected same key to resolve to same directory, got %q and %q", resKey1A[0].HostPath, resKey1B[0].HostPath)
+		}
+		if resKey1A[0].HostPath == resKey2[0].HostPath {
+			t.Errorf("expected different keys with same image SHA to resolve to different directories, both got %q", resKey1A[0].HostPath)
+		}
+	})
 }
 
 func TestBuildDockerArgs(t *testing.T) {
@@ -679,4 +707,125 @@ func TestGetRemoteHead(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunCacheKeyPerScript(t *testing.T) {
+	t.Setenv("CLIX_SANDBOX", "docker")
+
+	tmpDir := t.TempDir()
+	script1Path := filepath.Join(tmpDir, "script1.yaml")
+	script2Path := filepath.Join(tmpDir, "script2.yaml")
+
+	script1Content := `#!/usr/bin/env clix
+image: alpine
+mounts:
+  - hostPath: ${cacheDir}/data
+    sandboxPath: /data
+`
+	script2Content := `#!/usr/bin/env clix
+image: alpine
+mounts:
+  - hostPath: ${cacheDir}/data
+    sandboxPath: /data
+`
+	if err := os.WriteFile(script1Path, []byte(script1Content), 0755); err != nil {
+		t.Fatalf("Failed to write script1: %v", err)
+	}
+	if err := os.WriteFile(script2Path, []byte(script2Content), 0755); err != nil {
+		t.Fatalf("Failed to write script2: %v", err)
+	}
+
+	var dockerRuns [][]string
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "docker" && len(args) > 0 && args[0] == "run" {
+			dockerRuns = append(dockerRuns, args)
+		}
+		cs := []string{"-test.run=TestHelperDockerProcess", "--", name}
+		cs = append(cs, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(), "GO_WANT_DOCKER_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	var stdout, stderr bytes.Buffer
+	stdin := strings.NewReader("")
+
+	if err := run(stdin, &stdout, &stderr, []string{"clix", script1Path}); err != nil {
+		t.Fatalf("run script1 failed: %v", err)
+	}
+	if err := run(stdin, &stdout, &stderr, []string{"clix", script2Path}); err != nil {
+		t.Fatalf("run script2 failed: %v", err)
+	}
+
+	if len(dockerRuns) != 2 {
+		t.Fatalf("expected 2 docker run executions, got %d", len(dockerRuns))
+	}
+
+	findCacheMount := func(args []string) string {
+		for i, arg := range args {
+			if arg == "-v" && i+1 < len(args) {
+				parts := strings.Split(args[i+1], ":")
+				if len(parts) >= 2 && parts[1] == "/data" {
+					return parts[0]
+				}
+			}
+		}
+		return ""
+	}
+
+	hostPath1 := findCacheMount(dockerRuns[0])
+	hostPath2 := findCacheMount(dockerRuns[1])
+
+	if hostPath1 == "" {
+		t.Fatalf("failed to find cache mount in docker argv 1: %v", dockerRuns[0])
+	}
+	if hostPath2 == "" {
+		t.Fatalf("failed to find cache mount in docker argv 2: %v", dockerRuns[1])
+	}
+	if hostPath1 == hostPath2 {
+		t.Errorf("expected different host cache paths for two scripts, got %q for both", hostPath1)
+	}
+
+	absPath1, err := filepath.Abs(script1Path)
+	if err != nil {
+		t.Fatalf("filepath.Abs failed: %v", err)
+	}
+	h1 := sha256.Sum256([]byte(absPath1))
+	expectedKey1 := hex.EncodeToString(h1[:])[:16]
+
+	absPath2, err := filepath.Abs(script2Path)
+	if err != nil {
+		t.Fatalf("filepath.Abs failed: %v", err)
+	}
+	h2 := sha256.Sum256([]byte(absPath2))
+	expectedKey2 := hex.EncodeToString(h2[:])[:16]
+
+	if !strings.Contains(hostPath1, expectedKey1) {
+		t.Errorf("expected hostPath1 to contain script key %q, got %q", expectedKey1, hostPath1)
+	}
+	if !strings.Contains(hostPath2, expectedKey2) {
+		t.Errorf("expected hostPath2 to contain script key %q, got %q", expectedKey2, hostPath2)
+	}
+}
+
+func TestHelperDockerProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_DOCKER_HELPER_PROCESS") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 {
+		if args[0] == "--" {
+			args = args[1:]
+			break
+		}
+		args = args[1:]
+	}
+	if len(args) >= 2 && args[0] == "docker" && args[1] == "images" {
+		fmt.Println("mocksha256")
+		os.Exit(0)
+	}
+	os.Exit(0)
 }

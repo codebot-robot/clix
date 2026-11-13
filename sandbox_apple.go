@@ -70,7 +70,7 @@ func buildAppleContainerArgs(script Script, args []string, isTerm bool) ([]strin
 		}
 	}
 
-	resolvedMounts, err := resolveMounts(script.Mounts, imageSHA)
+	resolvedMounts, err := resolveMounts(script.Mounts, imageSHA, script.key)
 	if err != nil {
 		return nil, fmt.Errorf("error resolving mounts: %w", err)
 	}
