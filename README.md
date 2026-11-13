@@ -4,7 +4,7 @@ Running CLIs via containers, and using container images as the distribution meth
 
 `clix` makes it easy to "install" tools into your path, and takes care of downloading them and running them in whatever sandbox is available (Mac, Windows, Linux, inside a container like a kubernetes pod etc).
 
-We support selective sandboxing, so (for example) the AWS CLI won't need access to your gcloud credentials, and the gcloud CLI won't need access to your AWS credentials.
+We support selective sandboxing, so (for example) the AWS CLI won't need access to your gcloud credentials, and the gcloud CLI won't need access to your AWS credentials. Only the mounts and environment variables declared in the script are visible to the tool (see the [sandbox contract](docs/design/sandboxing.md#sandbox-contract)).
 
 ## Contributing
 
