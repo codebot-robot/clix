@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -54,8 +55,15 @@ func TestHelperProcess(t *testing.T) {
 	switch cmd {
 	case "git":
 		if len(cmdArgs) >= 2 && cmdArgs[0] == "ls-remote" {
-			// Mock ls-remote: return a dummy hash
-			fmt.Printf("abcdef1234567890\trefs/heads/main\n")
+			// Mock ls-remote: return a dummy 40-character hash
+			ref := "refs/heads/main"
+			for _, arg := range cmdArgs[1:] {
+				if strings.HasPrefix(arg, "refs/heads/") || strings.HasPrefix(arg, "refs/tags/") {
+					ref = arg
+					break
+				}
+			}
+			fmt.Printf("0123456789abcdef0123456789abcdef01234567\t%s\n", ref)
 			os.Exit(0)
 		}
 		if len(cmdArgs) >= 1 && cmdArgs[0] == "clone" {
