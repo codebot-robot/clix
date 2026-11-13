@@ -48,7 +48,11 @@ func prepareRootFS(imageRef string) (string, string, func(), error) {
 	if err != nil {
 		return "", "", nil, err
 	}
-	cleanup := func() { os.RemoveAll(tmpDir) }
+	cleanup := func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to remove temp dir %s: %v\n", tmpDir, err)
+		}
+	}
 
 	// Export to tar stream
 	pr, pw := io.Pipe()
