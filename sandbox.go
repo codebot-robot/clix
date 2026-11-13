@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/crane"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 // Sandbox is the interface implemented by all our sandboxing technologies (docker, chroot etc)
@@ -32,22 +33,45 @@ type Sandbox interface {
 	Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error
 }
 
-func prepareRootFS(imageRef string) (string, string, func(), error) {
+type preparedRootFS struct {
+	dir      string
+	imageSHA string
+	env      []string
+	cleanup  func()
+}
+
+func imageEnv(img v1.Image) ([]string, error) {
+	cf, err := img.ConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("reading image config: %w", err)
+	}
+	if cf == nil {
+		return nil, nil
+	}
+	return cf.Config.Env, nil
+}
+
+func prepareRootFS(imageRef string) (*preparedRootFS, error) {
 	// Assume it is a container image
 	img, err := crane.Pull(imageRef)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
+		return nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
 	}
 
 	digest, err := img.Digest()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("getting image digest: %w", err)
+		return nil, fmt.Errorf("getting image digest: %w", err)
 	}
 	imageSHA := digest.Hex
 
+	env, err := imageEnv(img)
+	if err != nil {
+		return nil, err
+	}
+
 	tmpDir, err := os.MkdirTemp("", "clix-chroot-*")
 	if err != nil {
-		return "", "", nil, err
+		return nil, err
 	}
 	cleanup := func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
@@ -64,10 +88,50 @@ func prepareRootFS(imageRef string) (string, string, func(), error) {
 
 	if err := untar(pr, tmpDir); err != nil {
 		cleanup()
-		return "", "", nil, fmt.Errorf("unpacking image: %w", err)
+		return nil, fmt.Errorf("unpacking image: %w", err)
 	}
 
-	return tmpDir, imageSHA, cleanup, nil
+	return &preparedRootFS{
+		dir:      tmpDir,
+		imageSHA: imageSHA,
+		env:      env,
+		cleanup:  cleanup,
+	}, nil
+}
+
+func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
+	var order []string
+	envMap := make(map[string]string)
+	set := func(name, value string) {
+		if name == "" {
+			return
+		}
+		if _, exists := envMap[name]; !exists {
+			order = append(order, name)
+		}
+		envMap[name] = value
+	}
+
+	set("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	set("HOME", "/root")
+	if term := os.Getenv("TERM"); term != "" {
+		set("TERM", term)
+	}
+
+	for _, entry := range imageEnv {
+		name, value, _ := strings.Cut(entry, "=")
+		set(name, value)
+	}
+
+	for _, env := range scriptEnv {
+		set(env.Name, env.Value)
+	}
+
+	result := make([]string, 0, len(order))
+	for _, name := range order {
+		result = append(result, name+"="+envMap[name])
+	}
+	return result
 }
 
 func untar(r io.Reader, dest string) error {
