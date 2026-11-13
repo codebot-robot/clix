@@ -69,7 +69,7 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	const sandboxID = 65534
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Chroot:     realRoot,
-		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWIPC,
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: sandboxID, HostID: os.Getuid(), Size: 1},
 		},
