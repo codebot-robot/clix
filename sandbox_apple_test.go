@@ -92,6 +92,51 @@ func TestBuildAppleContainerArgs(t *testing.T) {
 	if !foundMount {
 		t.Errorf("Expected mount for %s with host path containing %s, got args: %v", cacheMountDest, expectedHostPathPart, cmdArgs)
 	}
+
+	// Mount read-only table cases
+	mountTests := []struct {
+		name         string
+		mounts       []Mount
+		expectedArgs []string
+	}{
+		{
+			name: "Read-only mount",
+			mounts: []Mount{
+				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: true},
+			},
+			expectedArgs: []string{"--mount", "type=bind,source=/host/path,target=/sandbox/path,readonly"},
+		},
+		{
+			name: "Read-write mount",
+			mounts: []Mount{
+				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: false},
+			},
+			expectedArgs: []string{"-v", "/host/path:/sandbox/path"},
+		},
+	}
+
+	for _, tt := range mountTests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Script{
+				Image:  "python:3.11",
+				Mounts: tt.mounts,
+			}
+			cmdArgs, err := buildAppleContainerArgs(s, args, false)
+			if err != nil {
+				t.Fatalf("buildAppleContainerArgs failed: %v", err)
+			}
+			found := false
+			for i := 0; i < len(cmdArgs)-1; i++ {
+				if cmdArgs[i] == tt.expectedArgs[0] && cmdArgs[i+1] == tt.expectedArgs[1] {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Expected args %v in cmdArgs %v", tt.expectedArgs, cmdArgs)
+			}
+		})
+	}
 }
 
 func TestBuildImageAppleContainer(t *testing.T) {
