@@ -50,7 +50,7 @@ func (s *DockerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 }
 
 func buildDockerArgs(script Script, args []string, isTerm bool) ([]string, error) {
-	cmdArgs := []string{"run", "-i"}
+	cmdArgs := []string{"run", "--rm", "-i"}
 	if isTerm {
 		cmdArgs = append(cmdArgs, "-t")
 	}
