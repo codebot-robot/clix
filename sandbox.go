@@ -262,7 +262,8 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 			m.HostPath = strings.ReplaceAll(m.HostPath, "{cacheDir}", cacheDir)
 		}
 
-		if m.HostPath == "git.repoRoot(cwd)" {
+		isRepoRoot := m.HostPath == "git.repoRoot(cwd)"
+		if isRepoRoot {
 			root, err := findGitRoot(cwd)
 			if err != nil {
 				return nil, fmt.Errorf("failed to find git root: %w", err)
@@ -294,6 +295,17 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 		}
 
 		resolved = append(resolved, m)
+		if isRepoRoot {
+			gitMount := Mount{
+				HostPath:    filepath.Join(m.HostPath, ".git"),
+				SandboxPath: filepath.Join(m.SandboxPath, ".git"),
+				ReadOnly:    true,
+			}
+			if err := validateMount(gitMount, origHostPath, cacheDir); err != nil {
+				return nil, err
+			}
+			resolved = append(resolved, gitMount)
+		}
 	}
 	return resolved, nil
 }
@@ -321,11 +333,21 @@ func validateMount(m Mount, origHostPath, cacheDir string) error {
 }
 
 func findGitRoot(path string) (string, error) {
-	cmd := execCommand("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = path
-	out, err := cmd.Output()
+	dir, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	for {
+		gitEntry := filepath.Join(dir, ".git")
+		if _, err := os.Lstat(gitEntry); err == nil {
+			return dir, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s: %w", gitEntry, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("not a git repository (or any of the parent directories): .git")
+		}
+		dir = parent
+	}
 }

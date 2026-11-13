@@ -23,6 +23,8 @@ import (
 
 type ProotSandbox struct{}
 
+var prepareRootFSFn = prepareRootFS
+
 func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
 	for _, m := range script.Mounts {
 		if m.ReadOnly {
@@ -35,7 +37,7 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 		return fmt.Errorf("ProotSandbox requires an image path (used as root directory)")
 	}
 
-	rootFS, err := prepareRootFS(rootPath)
+	rootFS, err := prepareRootFSFn(rootPath)
 	if err != nil {
 		return err
 	}
@@ -65,8 +67,17 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 
 	// proot -r realRoot [-b host:guest ...] cmdArgs
 	prootArgs := []string{"-r", rootFS.dir}
+	var warnGit bool
 	for _, m := range resolvedMounts {
+		if m.ReadOnly {
+			warnGit = true
+		}
 		prootArgs = append(prootArgs, "-b", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
+	}
+	if warnGit {
+		if _, err := fmt.Fprintf(stderr, "warning: proot sandbox cannot protect .git from writes\n"); err != nil {
+			return err
+		}
 	}
 
 	prootArgs = append(prootArgs, cmdArgs...)
