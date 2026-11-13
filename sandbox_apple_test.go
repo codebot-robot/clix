@@ -70,10 +70,13 @@ func TestBuildAppleContainerArgs(t *testing.T) {
 		if arg == "-e" && i+1 < len(cmdArgs) && cmdArgs[i+1] == envVar {
 			foundEnv = true
 		}
-		if arg == "-v" && i+1 < len(cmdArgs) && strings.Contains(cmdArgs[i+1], ":"+cacheMountDest) {
+		if arg == "--mount" && i+1 < len(cmdArgs) && strings.Contains(cmdArgs[i+1], "target="+cacheMountDest) {
 			if strings.Contains(cmdArgs[i+1], expectedHostPathPart) {
 				foundMount = true
 			}
+		}
+		if arg == "-v" {
+			t.Errorf("Unexpected '-v' in cmdArgs: %v", cmdArgs)
 		}
 	}
 
@@ -111,7 +114,7 @@ func TestBuildAppleContainerArgs(t *testing.T) {
 			mounts: []Mount{
 				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: false},
 			},
-			expectedArgs: []string{"-v", "/host/path:/sandbox/path"},
+			expectedArgs: []string{"--mount", "type=bind,source=/host/path,target=/sandbox/path"},
 		},
 	}
 
@@ -134,6 +137,11 @@ func TestBuildAppleContainerArgs(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("Expected args %v in cmdArgs %v", tt.expectedArgs, cmdArgs)
+			}
+			for _, arg := range cmdArgs {
+				if arg == "-v" {
+					t.Errorf("Unexpected '-v' in cmdArgs: %v", cmdArgs)
+				}
 			}
 		})
 	}
