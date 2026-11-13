@@ -134,13 +134,16 @@ func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
 	return result
 }
 
-func untar(r io.Reader, dest string) error {
-	// Canonicalise dest so symlink-resolution checks below compare against the
-	// real path (e.g. /tmp -> /private/tmp on some platforms).
-	dest, err := filepath.EvalSymlinks(dest)
+func untar(r io.Reader, dest string) (retErr error) {
+	root, err := os.OpenRoot(dest)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil && retErr == nil {
+			retErr = closeErr
+		}
+	}()
 
 	tr := tar.NewReader(r)
 	for {
@@ -152,54 +155,26 @@ func untar(r io.Reader, dest string) error {
 			return err
 		}
 
-		path := filepath.Join(dest, header.Name)
-
-		// Lexical zip-slip protection on the entry name itself.
-		if !inDest(dest, path) {
-			return fmt.Errorf("illegal file path in image: %s", header.Name)
+		name := strings.TrimPrefix(header.Name, "./")
+		name = strings.TrimPrefix(name, "/")
+		if name == "" || name == "." {
+			continue
 		}
-
-		// Symlink-following protection: a previously extracted symlink must not
-		// redirect this entry's parent directory outside dest. This guards
-		// MkdirAll / Create / Chmod / Symlink below regardless of Typeflag.
-		if err := checkPathInDest(dest, filepath.Dir(path)); err != nil {
-			return err
+		if !filepath.IsLocal(name) {
+			return fmt.Errorf("illegal entry name %q", header.Name)
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(path, 0755); err != nil {
+			if err := extractDir(root, name); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			// Ensure parent dir exists
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			if err := extractReg(root, name, header, tr); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-			os.Chmod(path, os.FileMode(header.Mode))
 		case tar.TypeSymlink:
-			// Reject link targets that escape dest. Absolute targets are always
-			// rejected; relative targets are resolved lexically against the
-			// link's directory and must stay within dest. This is belt-and-
-			// braces alongside checkPathInDest above (which catches traversal
-			// through an already-planted link).
-			target := header.Linkname
-			if filepath.IsAbs(target) || !inDest(dest, filepath.Join(filepath.Dir(path), target)) {
-				return fmt.Errorf("illegal symlink target in image: %s -> %s", header.Name, target)
-			}
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-				return err
-			}
-			if err := os.Symlink(target, path); err != nil {
+			if err := extractSymlink(root, name, header); err != nil {
 				return err
 			}
 		}
@@ -207,32 +182,50 @@ func untar(r io.Reader, dest string) error {
 	return nil
 }
 
-// inDest reports whether p is dest or a path strictly beneath it.
-func inDest(dest, p string) bool {
-	return p == dest || strings.HasPrefix(p, dest+string(os.PathSeparator))
-}
-
-// checkPathInDest resolves all symlinks in p (or, if p does not yet exist, its
-// nearest existing ancestor) and verifies the result is still within dest.
-func checkPathInDest(dest, p string) error {
-	for {
-		resolved, err := filepath.EvalSymlinks(p)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				parent := filepath.Dir(p)
-				if parent == p {
-					return err
-				}
-				p = parent
-				continue
-			}
-			return err
-		}
-		if !inDest(dest, resolved) {
-			return fmt.Errorf("illegal file path in image: %s resolves outside rootfs", p)
+func removeNonDir(root *os.Root, name string) error {
+	fi, err := root.Lstat(name)
+	if err == nil {
+		if !fi.IsDir() {
+			return root.Remove(name)
 		}
 		return nil
 	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func extractDir(root *os.Root, name string) error {
+	return root.MkdirAll(name, 0755)
+}
+
+func extractReg(root *os.Root, name string, header *tar.Header, r io.Reader) error {
+	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	if err := removeNonDir(root, name); err != nil {
+		return err
+	}
+	perm := header.FileInfo().Mode().Perm()
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(f, r)
+	chmodErr := f.Chmod(perm)
+	closeErr := f.Close()
+	return errors.Join(copyErr, chmodErr, closeErr)
+}
+
+func extractSymlink(root *os.Root, name string, header *tar.Header) error {
+	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	if err := removeNonDir(root, name); err != nil {
+		return err
+	}
+	return root.Symlink(header.Linkname, name)
 }
 
 func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) {
