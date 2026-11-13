@@ -254,9 +254,89 @@ func TestResolveMounts(t *testing.T) {
 				if m.SandboxPath != tt.expected[i].SandboxPath {
 					t.Errorf("mount[%d].SandboxPath = %q, want %q", i, m.SandboxPath, tt.expected[i].SandboxPath)
 				}
+				if m.ReadOnly != tt.expected[i].ReadOnly {
+					t.Errorf("mount[%d].ReadOnly = %v, want %v", i, m.ReadOnly, tt.expected[i].ReadOnly)
+				}
 			}
 		})
 	}
+
+	t.Run("git.repoRoot(cwd)", func(t *testing.T) {
+		repoDir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0755); err != nil {
+			t.Fatalf("failed to create .git: %v", err)
+		}
+		t.Chdir(repoDir)
+
+		t.Run("repo-root mount yields root followed by read-only .git", func(t *testing.T) {
+			got, err := resolveMounts([]Mount{
+				{HostPath: "git.repoRoot(cwd)"},
+			}, "", "")
+			if err != nil {
+				t.Fatalf("resolveMounts failed: %v", err)
+			}
+			expected := []Mount{
+				{HostPath: repoDir, SandboxPath: repoDir, ReadOnly: false},
+				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: filepath.Join(repoDir, ".git"), ReadOnly: true},
+			}
+			if len(got) != len(expected) {
+				t.Fatalf("expected %d mounts, got %d", len(expected), len(got))
+			}
+			for i, m := range got {
+				if m != expected[i] {
+					t.Errorf("mount[%d] = %+v, want %+v", i, m, expected[i])
+				}
+			}
+		})
+
+		t.Run("custom sandboxPath places .git under it", func(t *testing.T) {
+			got, err := resolveMounts([]Mount{
+				{HostPath: "git.repoRoot(cwd)", SandboxPath: "/custom/sandbox"},
+			}, "", "")
+			if err != nil {
+				t.Fatalf("resolveMounts failed: %v", err)
+			}
+			expected := []Mount{
+				{HostPath: repoDir, SandboxPath: "/custom/sandbox", ReadOnly: false},
+				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: "/custom/sandbox/.git", ReadOnly: true},
+			}
+			if len(got) != len(expected) {
+				t.Fatalf("expected %d mounts, got %d", len(expected), len(got))
+			}
+			for i, m := range got {
+				if m != expected[i] {
+					t.Errorf("mount[%d] = %+v, want %+v", i, m, expected[i])
+				}
+			}
+		})
+
+		t.Run(".git as a file", func(t *testing.T) {
+			worktreeDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(worktreeDir, ".git"), []byte("gitdir: /path/to/main/.git/worktrees/wt\n"), 0644); err != nil {
+				t.Fatalf("failed to create .git file: %v", err)
+			}
+			t.Chdir(worktreeDir)
+
+			got, err := resolveMounts([]Mount{
+				{HostPath: "git.repoRoot(cwd)"},
+			}, "", "")
+			if err != nil {
+				t.Fatalf("resolveMounts failed: %v", err)
+			}
+			expected := []Mount{
+				{HostPath: worktreeDir, SandboxPath: worktreeDir, ReadOnly: false},
+				{HostPath: filepath.Join(worktreeDir, ".git"), SandboxPath: filepath.Join(worktreeDir, ".git"), ReadOnly: true},
+			}
+			if len(got) != len(expected) {
+				t.Fatalf("expected %d mounts, got %d", len(expected), len(got))
+			}
+			for i, m := range got {
+				if m != expected[i] {
+					t.Errorf("mount[%d] = %+v, want %+v", i, m, expected[i])
+				}
+			}
+		})
+	})
 
 	t.Run("Key isolation and repeatability", func(t *testing.T) {
 		mounts := []Mount{{HostPath: "${cacheDir}/data"}}
