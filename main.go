@@ -17,6 +17,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,7 +33,9 @@ var execCommand = exec.Command
 func log(level int, format string, v ...any) {
 	verbosity := 0
 	if vStr := os.Getenv("CLIX_LOG_VERBOSITY"); vStr != "" {
-		fmt.Sscanf(vStr, "%d", &verbosity)
+		if _, err := fmt.Sscanf(vStr, "%d", &verbosity); err != nil {
+			fmt.Fprintf(os.Stderr, "clix: failed to parse CLIX_LOG_VERBOSITY %q: %v\n", vStr, err)
+		}
 	}
 	if verbosity >= level {
 		fmt.Fprintf(os.Stderr, "clix: "+format+"\n", v...)
@@ -192,7 +195,7 @@ func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []s
 	return nil
 }
 
-func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, scriptName string) (string, error) {
+func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, scriptName string) (_ string, retErr error) {
 	if build.Git == "" {
 		return "", fmt.Errorf("build.git is required")
 	}
@@ -246,7 +249,11 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("failed to remove temp dir: %w", err))
+		}
+	}()
 
 	// Clone
 	cloneArgs := []string{"clone", "--depth", "1"}
@@ -255,7 +262,9 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	}
 	cloneArgs = append(cloneArgs, "--", build.Git, tempDir)
 
-	fmt.Fprintf(stderr, "Cloning %s...\n", build.Git)
+	if _, err := fmt.Fprintf(stderr, "Cloning %s...\n", build.Git); err != nil {
+		return "", err
+	}
 	cmd := execCommand("git", cloneArgs...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -281,7 +290,9 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 		buildArgs = []string{"build", "-f", dockerfile, "-t", imageTag, "."}
 	}
 
-	fmt.Fprintf(stderr, "Building image %s...\n", imageTag)
+	if _, err := fmt.Fprintf(stderr, "Building image %s...\n", imageTag); err != nil {
+		return "", err
+	}
 	cmd = execCommand(buildCmd, buildArgs...)
 	cmd.Dir = tempDir
 	cmd.Stdout = stdout
