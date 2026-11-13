@@ -235,7 +235,7 @@ func checkPathInDest(dest, p string) error {
 	}
 }
 
-func resolveMounts(mounts []Mount, imageSHA string) ([]Mount, error) {
+func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) {
 	var resolved []Mount
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -259,7 +259,7 @@ func resolveMounts(mounts []Mount, imageSHA string) ([]Mount, error) {
 				return nil, fmt.Errorf("failed to get user cache dir: %w", err)
 			}
 			// TODO: Eventually we'll need to do garbage collection
-			cacheDir := filepath.Join(userCache, "clix", "cache", imageSHA)
+			cacheDir := filepath.Join(userCache, "clix", "cache", imageSHA, scriptKey)
 			if err := os.MkdirAll(cacheDir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create cache dir: %w", err)
 			}

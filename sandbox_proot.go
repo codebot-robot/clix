@@ -52,7 +52,7 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 		}
 	}
 
-	resolvedMounts, err := resolveMounts(script.Mounts, rootFS.imageSHA)
+	resolvedMounts, err := resolveMounts(script.Mounts, rootFS.imageSHA, script.key)
 	if err != nil {
 		return fmt.Errorf("error resolving mounts: %w", err)
 	}

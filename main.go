@@ -49,6 +49,8 @@ type Script struct {
 	Entrypoint string       `json:"entrypoint,omitempty"`
 	Mounts     []Mount      `json:"mounts,omitempty"`
 	Env        []EnvVar     `json:"env,omitempty"`
+
+	key string
 }
 
 // BuildConfig allows building an image from source code
@@ -100,6 +102,13 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	if err := yaml.Unmarshal(data, &script); err != nil {
 		return fmt.Errorf("error parsing script file: %w", err)
 	}
+
+	absPath, err := filepath.Abs(scriptPath)
+	if err != nil {
+		return fmt.Errorf("error resolving script path: %w", err)
+	}
+	h := sha256.Sum256([]byte(absPath))
+	script.key = hex.EncodeToString(h[:])[:16]
 
 	if script.Build != nil {
 		imageName, err := buildImage(stdin, stdout, stderr, script.Build, scriptPath)
