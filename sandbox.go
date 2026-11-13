@@ -247,6 +247,8 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 	}
 
 	for _, m := range mounts {
+		origHostPath := m.HostPath
+		var cacheDir string
 		if strings.Contains(m.HostPath, "{cacheDir}") || strings.Contains(m.HostPath, "${cacheDir}") {
 			if strings.Count(m.HostPath, "{cacheDir}") > strings.Count(m.HostPath, "${cacheDir}") {
 				fmt.Fprintf(os.Stderr, "Warning: usage of {cacheDir} is deprecated and will be removed in future versions. Please use ${cacheDir} instead.\n")
@@ -259,7 +261,7 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 				return nil, fmt.Errorf("failed to get user cache dir: %w", err)
 			}
 			// TODO: Eventually we'll need to do garbage collection
-			cacheDir := filepath.Join(userCache, "clix", "cache", imageSHA, scriptKey)
+			cacheDir = filepath.Join(userCache, "clix", "cache", imageSHA, scriptKey)
 			if err := os.MkdirAll(cacheDir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create cache dir: %w", err)
 			}
@@ -288,12 +290,41 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 			m.SandboxPath = "/root"
 		}
 
+		m.HostPath = filepath.Clean(m.HostPath)
+
 		if m.SandboxPath == "" {
 			m.SandboxPath = m.HostPath
 		}
+
+		if err := validateMount(m, origHostPath, cacheDir); err != nil {
+			return nil, err
+		}
+
 		resolved = append(resolved, m)
 	}
 	return resolved, nil
+}
+
+func validateMount(m Mount, origHostPath, cacheDir string) error {
+	if !filepath.IsAbs(m.HostPath) {
+		return fmt.Errorf("mount %q: host path is not absolute", origHostPath)
+	}
+	if cacheDir != "" {
+		rel, err := filepath.Rel(cacheDir, m.HostPath)
+		if err != nil || !filepath.IsLocal(rel) {
+			return fmt.Errorf("mount %q: host path escapes cache directory", origHostPath)
+		}
+	}
+	if !filepath.IsAbs(m.SandboxPath) {
+		return fmt.Errorf("mount %q: sandbox path %q is not absolute", origHostPath, m.SandboxPath)
+	}
+	if strings.Contains(m.HostPath, ":") {
+		return fmt.Errorf("mount %q: host path contains ':'", origHostPath)
+	}
+	if strings.Contains(m.SandboxPath, ":") {
+		return fmt.Errorf("mount %q: sandbox path %q contains ':'", origHostPath, m.SandboxPath)
+	}
+	return nil
 }
 
 func findGitRoot(path string) (string, error) {
