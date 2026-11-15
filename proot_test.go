@@ -79,6 +79,25 @@ func TestProotReadOnlyMountRejected(t *testing.T) {
 	}
 }
 
+func TestProotReadOnlyMountDeclaredByScriptRejectedEvenIfNamedGit(t *testing.T) {
+	sandbox := &ProotSandbox{}
+	script := Script{
+		Image: "test-image",
+		Mounts: []Mount{
+			{HostPath: "/custom/path/.git", SandboxPath: "/sandbox/.git", ReadOnly: true},
+		},
+	}
+
+	err := sandbox.Run(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hi"})
+	if err == nil {
+		t.Fatalf("expected error for script-declared read-only mount ending in .git, got nil")
+	}
+	expected := "read-only mounts are not supported by the proot sandbox"
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("expected error %q, got %q", expected, err.Error())
+	}
+}
+
 func TestProotRepoRootMount(t *testing.T) {
 	repoDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0755); err != nil {
@@ -90,9 +109,8 @@ func TestProotRepoRootMount(t *testing.T) {
 	defer func() { prepareRootFSFn = oldPrepareRootFS }()
 	prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
 		return &preparedRootFS{
-			dir:      "/mock/rootfs",
-			imageSHA: "mocksha",
-			cleanup:  func() {},
+			dir:     "/mock/rootfs",
+			cleanup: func() {},
 		}, nil
 	}
 
@@ -113,9 +131,14 @@ func TestProotRepoRootMount(t *testing.T) {
 			{HostPath: "git.repoRoot(cwd)", SandboxPath: "/workspace"},
 		},
 	}
+	var err error
+	script.Mounts, err = resolveScriptMounts(script.Mounts, "proot", script.Image, script.key)
+	if err != nil {
+		t.Fatalf("resolveScriptMounts failed: %v", err)
+	}
 
 	var stdout, stderr bytes.Buffer
-	err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+	err = sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
 	if err != nil {
 		t.Fatalf("sandbox.Run failed: %v", err)
 	}
@@ -160,8 +183,7 @@ func TestProotFailingToolCleansUpRootFS(t *testing.T) {
 	defer func() { prepareRootFSFn = oldPrepareRootFS }()
 	prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
 		return &preparedRootFS{
-			dir:      temporaryDirectory,
-			imageSHA: "mocksha",
+			dir: temporaryDirectory,
 			cleanup: func() {
 				if err := os.RemoveAll(temporaryDirectory); err != nil {
 					t.Errorf("failed to remove temp dir: %v", err)

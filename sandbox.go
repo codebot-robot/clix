@@ -51,10 +51,9 @@ func newExitError(exitCode int) *ExitError {
 }
 
 type preparedRootFS struct {
-	dir      string
-	imageSHA string
-	env      []string
-	cleanup  func()
+	dir     string
+	env     []string
+	cleanup func()
 }
 
 func imageEnv(img v1.Image) ([]string, error) {
@@ -74,12 +73,6 @@ func prepareRootFS(imageRef string) (*preparedRootFS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
 	}
-
-	digest, err := img.Digest()
-	if err != nil {
-		return nil, fmt.Errorf("getting image digest: %w", err)
-	}
-	imageSHA := digest.Hex
 
 	env, err := imageEnv(img)
 	if err != nil {
@@ -109,10 +102,9 @@ func prepareRootFS(imageRef string) (*preparedRootFS, error) {
 	}
 
 	return &preparedRootFS{
-		dir:      tmpDir,
-		imageSHA: imageSHA,
-		env:      env,
-		cleanup:  cleanup,
+		dir:     tmpDir,
+		env:     env,
+		cleanup: cleanup,
 	}, nil
 }
 
@@ -316,9 +308,10 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 		resolved = append(resolved, m)
 		if isRepoRoot {
 			gitMount := Mount{
-				HostPath:    filepath.Join(m.HostPath, ".git"),
-				SandboxPath: filepath.Join(m.SandboxPath, ".git"),
-				ReadOnly:    true,
+				HostPath:         filepath.Join(m.HostPath, ".git"),
+				SandboxPath:      filepath.Join(m.SandboxPath, ".git"),
+				ReadOnly:         true,
+				WritableFallback: true,
 			}
 			if err := validateMount(gitMount, origHostPath, cacheDir); err != nil {
 				return nil, err
@@ -327,6 +320,36 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 		}
 	}
 	return resolved, nil
+}
+
+func resolveScriptMounts(mounts []Mount, sandboxType, image, scriptKey string) ([]Mount, error) {
+	imageSHA := ""
+	needsSHA := false
+	for _, mount := range mounts {
+		if strings.Contains(mount.HostPath, "{cacheDir}") || strings.Contains(mount.HostPath, "${cacheDir}") {
+			needsSHA = true
+			break
+		}
+	}
+
+	if needsSHA {
+		var err error
+		switch sandboxType {
+		case "apple-container":
+			imageSHA, err = getAppleContainerImageSHAFn(image)
+		case "proot":
+			imageSHA, err = getProotImageSHAFn(image)
+		case "chroot":
+			return nil, fmt.Errorf("mounts are not supported in chroot sandbox")
+		default:
+			imageSHA, err = getImageSHAFn(image)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to get image SHA: %w", err)
+		}
+	}
+
+	return resolveMounts(mounts, imageSHA, scriptKey)
 }
 
 func validateMount(m Mount, origHostPath, cacheDir string) error {

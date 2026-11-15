@@ -51,30 +51,7 @@ func buildAppleContainerArgs(script Script, args []string, isTerm bool) ([]strin
 		cmdArgs = append(cmdArgs, "-it")
 	}
 
-	// Resolve cache directory if needed
-	imageSHA := ""
-	needsSHA := false
 	for _, m := range script.Mounts {
-		if strings.Contains(m.HostPath, "{cacheDir}") || strings.Contains(m.HostPath, "${cacheDir}") {
-			needsSHA = true
-			break
-		}
-	}
-
-	if needsSHA {
-		var err error
-		imageSHA, err = getAppleContainerImageSHAFn(script.Image)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get image SHA: %w", err)
-		}
-	}
-
-	resolvedMounts, err := resolveMounts(script.Mounts, imageSHA, script.key)
-	if err != nil {
-		return nil, fmt.Errorf("error resolving mounts: %w", err)
-	}
-
-	for _, m := range resolvedMounts {
 		mountArg := fmt.Sprintf("type=bind,source=%s,target=%s", m.HostPath, m.SandboxPath)
 		if m.ReadOnly {
 			mountArg += ",readonly"
