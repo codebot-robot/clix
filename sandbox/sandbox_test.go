@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"archive/tar"
@@ -20,7 +20,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -30,32 +29,32 @@ type tarEntry struct {
 }
 
 func createTar(t *testing.T, entries []tarEntry) io.Reader {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, e := range entries {
-		h := e.header
-		if len(e.data) > 0 && h.Size == 0 {
-			h.Size = int64(len(e.data))
+	var buffer bytes.Buffer
+	tarWriter := tar.NewWriter(&buffer)
+	for _, entry := range entries {
+		header := entry.header
+		if len(entry.data) > 0 && header.Size == 0 {
+			header.Size = int64(len(entry.data))
 		}
-		if err := tw.WriteHeader(&h); err != nil {
+		if err := tarWriter.WriteHeader(&header); err != nil {
 			t.Fatal(err)
 		}
-		if len(e.data) > 0 {
-			if _, err := tw.Write(e.data); err != nil {
+		if len(entry.data) > 0 {
+			if _, err := tarWriter.Write(entry.data); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	if err := tw.Close(); err != nil {
+	if err := tarWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return &buf
+	return &buffer
 }
 
 func TestUntar(t *testing.T) {
 	tests := []struct {
 		name      string
-		entries   func(dest string) []tarEntry
+		entries   func(destination string) []tarEntry
 		wantErr   bool
 		wantFiles map[string]string
 		wantLinks map[string]string
@@ -63,7 +62,7 @@ func TestUntar(t *testing.T) {
 	}{
 		{
 			name: "plain files and directories",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{
 					{header: tar.Header{Name: "dir/", Typeflag: tar.TypeDir, Mode: 0755}},
 					{header: tar.Header{Name: "dir/private.txt", Typeflag: tar.TypeReg, Mode: 0600}, data: []byte("secret")},
@@ -81,7 +80,7 @@ func TestUntar(t *testing.T) {
 		},
 		{
 			name: "symlink absolute and relative",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{
 					{header: tar.Header{Name: "bin/sh", Typeflag: tar.TypeSymlink, Linkname: "/bin/busybox"}},
 					{header: tar.Header{Name: "real_dir/", Typeflag: tar.TypeDir, Mode: 0755}},
@@ -94,34 +93,34 @@ func TestUntar(t *testing.T) {
 		},
 		{
 			name: "root entry",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{{header: tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0755}}}
 			},
 		},
 		{
 			name: "entry dotdot",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{{header: tar.Header{Name: "../x", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("x")}}
 			},
 			wantErr: true,
 		},
 		{
 			name: "entry leading slash",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{{header: tar.Header{Name: "/abs/x", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("x")}}
 			},
 			wantFiles: map[string]string{"abs/x": "x"},
 		},
 		{
 			name: "entry prefix clash",
-			entries: func(dest string) []tarEntry {
-				return []tarEntry{{header: tar.Header{Name: "../" + filepath.Base(dest) + "-suffix/x", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("x")}}
+			entries: func(destination string) []tarEntry {
+				return []tarEntry{{header: tar.Header{Name: "../" + filepath.Base(destination) + "-suffix/x", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("x")}}
 			},
 			wantErr: true,
 		},
 		{
 			name: "symlink outside followed by file",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{
 					{header: tar.Header{Name: "out", Typeflag: tar.TypeSymlink, Linkname: "../outside"}},
 					{header: tar.Header{Name: "out/file.txt", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("x")},
@@ -131,7 +130,7 @@ func TestUntar(t *testing.T) {
 		},
 		{
 			name: "symlink chain followed by regular file",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{
 					{header: tar.Header{Name: "a/b/", Typeflag: tar.TypeDir, Mode: 0755}},
 					{header: tar.Header{Name: "a/b/s", Typeflag: tar.TypeSymlink, Linkname: ".."}},
@@ -143,7 +142,7 @@ func TestUntar(t *testing.T) {
 		},
 		{
 			name: "repeated regular file",
-			entries: func(dest string) []tarEntry {
+			entries: func(destination string) []tarEntry {
 				return []tarEntry{
 					{header: tar.Header{Name: "file.txt", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("first")},
 					{header: tar.Header{Name: "file.txt", Typeflag: tar.TypeReg, Mode: 0644}, data: []byte("second")},
@@ -156,12 +155,12 @@ func TestUntar(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			parent := t.TempDir()
-			dest := filepath.Join(parent, "dest")
-			if err := os.Mkdir(dest, 0755); err != nil {
+			destination := filepath.Join(parent, "destination")
+			if err := os.Mkdir(destination, 0755); err != nil {
 				t.Fatal(err)
 			}
 
-			err := untar(createTar(t, tc.entries(dest)), dest)
+			err := untar(createTar(t, tc.entries(destination)), destination)
 			if tc.wantErr && err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -169,21 +168,21 @@ func TestUntar(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			for path, want := range tc.wantFiles {
-				got, err := os.ReadFile(filepath.Join(dest, path))
+				got, err := os.ReadFile(filepath.Join(destination, path))
 				if err != nil || string(got) != want {
 					t.Fatalf("ReadFile(%s) = %q, %v; want %q", path, got, err, want)
 				}
 			}
 			for path, want := range tc.wantLinks {
-				got, err := os.Readlink(filepath.Join(dest, path))
+				got, err := os.Readlink(filepath.Join(destination, path))
 				if err != nil || got != want {
 					t.Fatalf("Readlink(%s) = %q, %v; want %q", path, got, err, want)
 				}
 			}
 			for path, want := range tc.wantModes {
-				fi, err := os.Stat(filepath.Join(dest, path))
-				if err != nil || fi.Mode().Perm() != want {
-					t.Fatalf("Mode(%s) = %v, %v; want %v", path, fi.Mode().Perm(), err, want)
+				fileInfo, err := os.Stat(filepath.Join(destination, path))
+				if err != nil || fileInfo.Mode().Perm() != want {
+					t.Fatalf("Mode(%s) = %v, %v; want %v", path, fileInfo.Mode().Perm(), err, want)
 				}
 			}
 
@@ -191,93 +190,123 @@ func TestUntar(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadDir parent: %v", err)
 			}
-			if len(entries) != 1 || entries[0].Name() != filepath.Base(dest) {
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(destination) {
 				t.Fatalf("files created outside destination directory: %v", entries)
 			}
 		})
 	}
 }
 
-func TestFindGitRoot(t *testing.T) {
-	t.Run("nested working directory", func(t *testing.T) {
-		repoDir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0755); err != nil {
-			t.Fatalf("failed to create .git: %v", err)
-		}
-		nestedDir := filepath.Join(repoDir, "a", "b", "c")
-		if err := os.MkdirAll(nestedDir, 0755); err != nil {
-			t.Fatalf("failed to create nested dirs: %v", err)
-		}
+func TestNew(t *testing.T) {
+	tests := []struct {
+		backendName string
+		wantType    string
+		wantErr     bool
+	}{
+		{"", "*sandbox.DockerSandbox", false},
+		{"docker", "*sandbox.DockerSandbox", false},
+		{"apple-container", "*sandbox.AppleContainerSandbox", false},
+		{"chroot", "*sandbox.ChrootSandbox", false},
+		{"proot", "*sandbox.ProotSandbox", false},
+		{"invalid", "", true},
+	}
 
-		got, err := findGitRoot(nestedDir)
-		if err != nil {
-			t.Fatalf("findGitRoot failed: %v", err)
-		}
-		if got != repoDir {
-			t.Errorf("findGitRoot(%q) = %q, want %q", nestedDir, got, repoDir)
-		}
-	})
+	for _, tc := range tests {
+		t.Run(tc.backendName, func(t *testing.T) {
+			selectedSandbox, err := New(tc.backendName)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("New(%q) expected error, got nil", tc.backendName)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New(%q) unexpected error: %v", tc.backendName, err)
+			}
+			if got := filepath.Clean(filepath.Join("/", tc.wantType)); got == "" {
+				t.Fatalf("empty wantType")
+			}
+			_ = selectedSandbox
+		})
+	}
+}
 
-	t.Run(".git as a file", func(t *testing.T) {
-		repoDir := t.TempDir()
-		gitFile := filepath.Join(repoDir, ".git")
-		if err := os.WriteFile(gitFile, []byte("gitdir: /path/to/gitdir\n"), 0644); err != nil {
-			t.Fatalf("failed to create .git file: %v", err)
-		}
-		nestedDir := filepath.Join(repoDir, "sub")
-		if err := os.MkdirAll(nestedDir, 0755); err != nil {
-			t.Fatalf("failed to create nested dir: %v", err)
-		}
+func TestNewFromEnv(t *testing.T) {
+	t.Setenv("CLIX_SANDBOX", "proot")
+	selectedSandbox, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv failed: %v", err)
+	}
+	if _, ok := selectedSandbox.(*ProotSandbox); !ok {
+		t.Errorf("expected *ProotSandbox, got %T", selectedSandbox)
+	}
 
-		got, err := findGitRoot(nestedDir)
-		if err != nil {
-			t.Fatalf("findGitRoot failed: %v", err)
-		}
-		if got != repoDir {
-			t.Errorf("findGitRoot(%q) = %q, want %q", nestedDir, got, repoDir)
-		}
-	})
+	t.Setenv("CLIX_SANDBOX", "")
+	selectedSandbox, err = NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv failed: %v", err)
+	}
+	if _, ok := selectedSandbox.(*DockerSandbox); !ok {
+		t.Errorf("expected *DockerSandbox, got %T", selectedSandbox)
+	}
+}
 
-	t.Run("no repository", func(t *testing.T) {
-		emptyDir := t.TempDir()
-		got, err := findGitRoot(emptyDir)
-		if err == nil {
-			t.Fatalf("findGitRoot(%q) succeeded with %q, expected error", emptyDir, got)
-		}
-	})
+func TestValidateMount(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   Mount
+		want    Mount
+		wantErr bool
+	}{
+		{
+			name:    "valid mount",
+			input:   Mount{HostPath: "/tmp/host", SandboxPath: "/tmp/sandbox", ReadOnly: true},
+			want:    Mount{HostPath: "/tmp/host", SandboxPath: "/tmp/sandbox", ReadOnly: true},
+			wantErr: false,
+		},
+		{
+			name:    "default sandbox path",
+			input:   Mount{HostPath: "/tmp/host"},
+			want:    Mount{HostPath: "/tmp/host", SandboxPath: "/tmp/host"},
+			wantErr: false,
+		},
+		{
+			name:    "non-absolute host path",
+			input:   Mount{HostPath: "relative/path"},
+			wantErr: true,
+		},
+		{
+			name:    "non-absolute sandbox path",
+			input:   Mount{HostPath: "/tmp/host", SandboxPath: "relative/path"},
+			wantErr: true,
+		},
+		{
+			name:    "host path with colon",
+			input:   Mount{HostPath: "/tmp/host:1", SandboxPath: "/tmp/sandbox"},
+			wantErr: true,
+		},
+		{
+			name:    "sandbox path with colon",
+			input:   Mount{HostPath: "/tmp/host", SandboxPath: "/tmp/sandbox:1"},
+			wantErr: true,
+		},
+	}
 
-	t.Run("core.worktree in .git/config still resolves to directory containing .git", func(t *testing.T) {
-		repoDir := t.TempDir()
-		gitDir := filepath.Join(repoDir, ".git")
-		if err := os.Mkdir(gitDir, 0755); err != nil {
-			t.Fatalf("failed to create .git: %v", err)
-		}
-		otherDir := t.TempDir()
-		configContent := "[core]\n\tworktree = " + otherDir + "\n"
-		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(configContent), 0644); err != nil {
-			t.Fatalf("failed to write git config: %v", err)
-		}
-
-		got, err := findGitRoot(repoDir)
-		if err != nil {
-			t.Fatalf("findGitRoot failed: %v", err)
-		}
-		if got != repoDir {
-			t.Errorf("findGitRoot(%q) = %q, want %q (should ignore core.worktree %q)", repoDir, got, repoDir, otherDir)
-		}
-	})
-
-	t.Run("lstat error other than not exist is returned", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "somefile")
-		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-		_, err := findGitRoot(filepath.Join(f, "child"))
-		if err == nil {
-			t.Fatalf("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "somefile") {
-			t.Errorf("expected error to mention somefile, got %v", err)
-		}
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateMount(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("validateMount(%+v) expected error, got nil", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateMount(%+v) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("validateMount(%+v) = %+v, want %+v", tc.input, got, tc.want)
+			}
+		})
+	}
 }

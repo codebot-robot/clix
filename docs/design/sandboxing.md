@@ -7,13 +7,46 @@ This document describes the design for running tools in a sandbox environment (D
 *   Allow tools to run in isolated Docker containers.
 *   Support mounting host directories into the container.
 *   Provide a way to dynamically determine mount points (e.g., git repository root).
+*   Offer sandboxing as an importable Go library for other applications.
 
 ## Sandbox contract
 
-*   **Environment.** A sandboxed tool receives only the variables listed in the script's `env:` block, plus whatever the container image itself defines, plus a minimal base that a backend must supply for the tool to run at all (`PATH`, `HOME`, and `TERM` when attached to a terminal). The host environment is never inherited or passed through, on any backend. There is no syntax for "pass this host variable through"; a value in `env:` is a literal.
+*   **Environment.** A sandboxed tool receives only the variables listed in the script's `env:` block (or the library caller's `Env`), plus whatever the container image itself defines, plus a minimal base that a backend must supply for the tool to run at all (`PATH`, `HOME`, and `TERM` when attached to a terminal). The host environment is never inherited or passed through, on any backend. There is no syntax for "pass this host variable through"; a value in `env:` is a literal.
 *   **Filesystem.** A sandboxed tool sees the image's filesystem plus only the host directories listed in `mounts:`.
 *   **Backends.** The contract is the same for every backend selected by `CLIX_SANDBOX` (`docker`, the default; `apple-container`; `chroot`; `proot`). A backend that cannot honour part of the contract must fail with an error rather than run with less isolation.
 *   **Not sandboxed today.** A script with `go:` and no `mounts:` is run with `go run` directly on the host (`runGo` in `main.go`), with the host environment and filesystem. This is the current behaviour of the prototype.
+
+## Library Usage
+
+The sandboxing functionality is available as an importable Go package:
+
+```go
+import "github.com/gke-labs/clix/sandbox"
+```
+
+A library caller can select a backend using `sandbox.New(backend)` or `sandbox.NewFromEnv()` (which respects `CLIX_SANDBOX`, defaulting to `docker`), and execute a container image via `Sandbox.Run`:
+
+```go
+selectedSandbox, err := sandbox.NewFromEnv()
+if err != nil {
+    return err
+}
+
+config := sandbox.Config{
+    Image: "alpine:latest",
+    Mounts: []sandbox.Mount{
+        {HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: true},
+    },
+    Env: []sandbox.EnvVar{
+        {Name: "MY_VAR", Value: "value"},
+    },
+    WorkingDir: "/sandbox/path",
+}
+
+err = selectedSandbox.Run(stdin, stdout, stderr, config, []string{"echo", "hello"})
+```
+
+The [Sandbox contract](#sandbox-contract) holds for a library caller exactly as for the `clix` command: only declared environment and mounts are visible, and a backend that cannot honour the contract fails with an error rather than running with less isolation.
 
 ## Configuration
 
@@ -74,6 +107,4 @@ docker run \
   -w /current/work/dir \
   golang:latest \
   go run github.com/example/tool
-```
-
 ```

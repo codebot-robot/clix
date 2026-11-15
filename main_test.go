@@ -362,183 +362,133 @@ func TestResolveMounts(t *testing.T) {
 	})
 }
 
-func TestBuildDockerArgs(t *testing.T) {
-	// Mock getImageSHA
-	originalGetImageSHA := getImageSHAFn
-	defer func() { getImageSHAFn = originalGetImageSHA }()
-	getImageSHAFn = func(image string) (string, error) {
-		return "mocksha256", nil
+func TestFindGitRoot(t *testing.T) {
+	t.Run("nested working directory", func(t *testing.T) {
+		repoDir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0755); err != nil {
+			t.Fatalf("failed to create .git: %v", err)
+		}
+		nestedDir := filepath.Join(repoDir, "a", "b", "c")
+		if err := os.MkdirAll(nestedDir, 0755); err != nil {
+			t.Fatalf("failed to create nested dirs: %v", err)
+		}
+
+		got, err := findGitRoot(nestedDir)
+		if err != nil {
+			t.Fatalf("findGitRoot failed: %v", err)
+		}
+		if got != repoDir {
+			t.Errorf("findGitRoot(%q) = %q, want %q", nestedDir, got, repoDir)
+		}
+	})
+
+	t.Run(".git as a file", func(t *testing.T) {
+		repoDir := t.TempDir()
+		gitFile := filepath.Join(repoDir, ".git")
+		if err := os.WriteFile(gitFile, []byte("gitdir: /path/to/gitdir\n"), 0644); err != nil {
+			t.Fatalf("failed to create .git file: %v", err)
+		}
+		nestedDir := filepath.Join(repoDir, "sub")
+		if err := os.MkdirAll(nestedDir, 0755); err != nil {
+			t.Fatalf("failed to create nested dir: %v", err)
+		}
+
+		got, err := findGitRoot(nestedDir)
+		if err != nil {
+			t.Fatalf("findGitRoot failed: %v", err)
+		}
+		if got != repoDir {
+			t.Errorf("findGitRoot(%q) = %q, want %q", nestedDir, got, repoDir)
+		}
+	})
+
+	t.Run("no repository", func(t *testing.T) {
+		emptyDir := t.TempDir()
+		got, err := findGitRoot(emptyDir)
+		if err == nil {
+			t.Fatalf("findGitRoot(%q) succeeded with %q, expected error", emptyDir, got)
+		}
+	})
+
+	t.Run("core.worktree in .git/config still resolves to directory containing .git", func(t *testing.T) {
+		repoDir := t.TempDir()
+		gitDir := filepath.Join(repoDir, ".git")
+		if err := os.Mkdir(gitDir, 0755); err != nil {
+			t.Fatalf("failed to create .git: %v", err)
+		}
+		otherDir := t.TempDir()
+		configContent := "[core]\n\tworktree = " + otherDir + "\n"
+		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(configContent), 0644); err != nil {
+			t.Fatalf("failed to write git config: %v", err)
+		}
+
+		got, err := findGitRoot(repoDir)
+		if err != nil {
+			t.Fatalf("findGitRoot failed: %v", err)
+		}
+		if got != repoDir {
+			t.Errorf("findGitRoot(%q) = %q, want %q (should ignore core.worktree %q)", repoDir, got, repoDir, otherDir)
+		}
+	})
+
+	t.Run("lstat error other than not exist is returned", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "somefile")
+		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+		_, err := findGitRoot(filepath.Join(f, "child"))
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "somefile") {
+			t.Errorf("expected error to mention somefile, got %v", err)
+		}
+	})
+}
+
+func TestBuildImageAppleContainer(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = fakeExecCommand
+
+	t.Setenv("CLIX_SANDBOX", "apple-container")
+
+	var stdout, stderr bytes.Buffer
+	stdin := strings.NewReader("")
+
+	build := &BuildConfig{
+		Git: "https://github.com/example/repo",
 	}
 
-	// 1. Basic case
-	script := Script{
-		Image: "python:3.11",
-	}
-	args := []string{"script.py"}
-	cmdArgs, err := buildDockerArgs(script, args, false)
+	_, err := buildImage(stdin, &stdout, &stderr, build, "test-script.yaml")
 	if err != nil {
-		t.Fatalf("buildDockerArgs failed: %v", err)
-	}
-	// Check basics
-	// cmdArgs: [run --rm -i -w ... image args...]
-	if len(cmdArgs) < 3 || cmdArgs[0] != "run" || cmdArgs[1] != "--rm" || cmdArgs[2] != "-i" {
-		t.Errorf("Expected cmdArgs to start with [run, --rm, -i], got %v", cmdArgs)
-	}
-	foundRun := false
-	foundRm := false
-	foundImage := false
-	for _, arg := range cmdArgs {
-		if arg == "run" {
-			foundRun = true
-		}
-		if arg == "--rm" {
-			foundRm = true
-		}
-		if arg == "python:3.11" {
-			foundImage = true
-		}
-	}
-	if !foundRun {
-		t.Errorf("Expected 'run' in args, got %v", cmdArgs)
-	}
-	if !foundRm {
-		t.Errorf("Expected '--rm' in args, got %v", cmdArgs)
-	}
-	if !foundImage {
-		t.Errorf("Expected image python:3.11 in args, got %v", cmdArgs)
+		t.Fatalf("buildImage failed: %v", err)
 	}
 
-	termArgs, err := buildDockerArgs(script, args, true)
+	outStr := stderr.String()
+	if !strings.Contains(outStr, "Cloning") {
+		t.Errorf("Expected cloning message, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "Building image") {
+		t.Errorf("Expected building message, got: %s", outStr)
+	}
+}
+
+func TestGetAppleContainerImageSHA(t *testing.T) {
+	oldExec := execCommand
+	defer func() { execCommand = oldExec }()
+
+	execCommand = fakeExecCommand
+
+	sha, err := getAppleContainerImageSHA("test-image")
 	if err != nil {
-		t.Fatalf("buildDockerArgs with isTerm=true failed: %v", err)
-	}
-	if len(termArgs) < 4 || termArgs[0] != "run" || termArgs[1] != "--rm" || termArgs[2] != "-i" || termArgs[3] != "-t" {
-		t.Errorf("Expected termArgs to start with [run, --rm, -i, -t], got %v", termArgs)
+		t.Fatalf("getAppleContainerImageSHA failed: %v", err)
 	}
 
-	// 2. Python cache enabled via explicit mounts and env
-	scriptPython := Script{
-		Image: "python:3.11",
-		Mounts: []Mount{
-			{HostPath: "{cacheDir}/python", SandboxPath: "/tmp/.clix-pycache"},
-		},
-		Env: []EnvVar{
-			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
-		},
-	}
-	cmdArgs, err = buildDockerArgs(scriptPython, args, false)
-	if err != nil {
-		t.Fatalf("buildDockerArgs failed: %v", err)
-	}
-
-	// Check for env var and mount
-	foundEnv := false
-	foundMount := false
-
-	cacheMountDest := "/tmp/.clix-pycache"
-	envVar := "PYTHONPYCACHEPREFIX=" + cacheMountDest
-
-	// We expect the mount path to contain the SHA
-	expectedHostPathPart := "mocksha256/python"
-
-	for i, arg := range cmdArgs {
-		if arg == "-e" && i+1 < len(cmdArgs) && cmdArgs[i+1] == envVar {
-			foundEnv = true
-		}
-		if arg == "-v" && i+1 < len(cmdArgs) && strings.Contains(cmdArgs[i+1], ":"+cacheMountDest) {
-			if strings.Contains(cmdArgs[i+1], expectedHostPathPart) {
-				foundMount = true
-			}
-		}
-	}
-
-	if !foundEnv {
-		t.Errorf("Expected environment variable %s, got args: %v", envVar, cmdArgs)
-	}
-	if !foundMount {
-		t.Errorf("Expected mount for %s with host path containing %s, got args: %v", cacheMountDest, expectedHostPathPart, cmdArgs)
-	}
-
-	// 3. Python cache enabled via explicit mounts and env using ${cacheDir}
-	scriptPythonNew := Script{
-		Image: "python:3.11",
-		Mounts: []Mount{
-			{HostPath: "${cacheDir}/python", SandboxPath: "/tmp/.clix-pycache"},
-		},
-		Env: []EnvVar{
-			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
-		},
-	}
-	cmdArgs, err = buildDockerArgs(scriptPythonNew, args, false)
-	if err != nil {
-		t.Fatalf("buildDockerArgs failed: %v", err)
-	}
-
-	// Check for env var and mount
-	foundEnv = false
-	foundMount = false
-
-	for i, arg := range cmdArgs {
-		if arg == "-e" && i+1 < len(cmdArgs) && cmdArgs[i+1] == envVar {
-			foundEnv = true
-		}
-		if arg == "-v" && i+1 < len(cmdArgs) && strings.Contains(cmdArgs[i+1], ":"+cacheMountDest) {
-			if strings.Contains(cmdArgs[i+1], expectedHostPathPart) {
-				foundMount = true
-			}
-		}
-	}
-
-	if !foundEnv {
-		t.Errorf("Expected environment variable %s, got args: %v", envVar, cmdArgs)
-	}
-	if !foundMount {
-		t.Errorf("Expected mount for %s with host path containing %s, got args: %v", cacheMountDest, expectedHostPathPart, cmdArgs)
-	}
-
-	// 4. Mount read-only table cases
-	mountTests := []struct {
-		name         string
-		mounts       []Mount
-		expectedArgs []string
-	}{
-		{
-			name: "Read-only mount",
-			mounts: []Mount{
-				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: true},
-			},
-			expectedArgs: []string{"-v", "/host/path:/sandbox/path:ro"},
-		},
-		{
-			name: "Read-write mount",
-			mounts: []Mount{
-				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: false},
-			},
-			expectedArgs: []string{"-v", "/host/path:/sandbox/path"},
-		},
-	}
-
-	for _, tt := range mountTests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := Script{
-				Image:  "python:3.11",
-				Mounts: tt.mounts,
-			}
-			cmdArgs, err := buildDockerArgs(s, args, false)
-			if err != nil {
-				t.Fatalf("buildDockerArgs failed: %v", err)
-			}
-			found := false
-			for i := 0; i < len(cmdArgs)-1; i++ {
-				if cmdArgs[i] == tt.expectedArgs[0] && cmdArgs[i+1] == tt.expectedArgs[1] {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("Expected args %v in cmdArgs %v", tt.expectedArgs, cmdArgs)
-			}
-		})
+	expectedSHA := "abcdef123456"
+	if sha != expectedSHA {
+		t.Errorf("Expected SHA %s, got %s", expectedSHA, sha)
 	}
 }
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"slices"
@@ -68,7 +68,7 @@ func TestBuildSandboxEnv(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildSandboxEnv(tc.imageEnv, tc.scriptEnv)
+			got := BuildEnv(tc.imageEnv, tc.scriptEnv)
 
 			seen := make(map[string]bool)
 			for _, entry := range got {

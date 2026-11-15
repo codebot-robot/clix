@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"syscall"
 )
 
+// ChrootSandbox executes container workloads in a Linux user and mount namespace with chroot.
 type ChrootSandbox struct{}
 
-func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
-	rootPath := script.Image
+// Run executes the container image described by config using Linux namespaces and chroot.
+func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, config Config, args []string) error {
+	rootPath := config.Image
 	if rootPath == "" {
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
 	}
@@ -40,8 +41,8 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	var cmdPath string
 	var cmdArgs []string
 
-	if script.Entrypoint != "" {
-		cmdPath = script.Entrypoint
+	if config.Entrypoint != "" {
+		cmdPath = config.Entrypoint
 		cmdArgs = append([]string{cmdPath}, args...)
 	} else {
 		// If no entrypoint, use the first argument as command
@@ -54,7 +55,7 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	}
 
 	// Prepare the command
-	cmd := execCommand(cmdPath, cmdArgs[1:]...)
+	cmd := ExecCommand(cmdPath, cmdArgs[1:]...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -79,21 +80,20 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 		GidMappingsEnableSetgroups: false,
 	}
 
-	// We start at root of the new root
-	cmd.Dir = "/"
+	workDir := config.WorkingDir
+	if workDir == "" {
+		workDir = "/"
+	}
+	cmd.Dir = workDir
 
 	// We are not handling mounts here yet.
-	// Issue says: "leave a lot of functionality not supported"
-	if len(script.Mounts) > 0 {
+	if len(config.Mounts) > 0 {
 		return fmt.Errorf("mounts are not supported in chroot sandbox")
 	}
 
-	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
+	cmd.Env = BuildEnv(rootFS.env, config.Env)
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
 		return fmt.Errorf("error running chroot command: %w", err)
 	}
 

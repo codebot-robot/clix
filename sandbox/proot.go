@@ -12,27 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
+	"path/filepath"
 )
 
+// ProotSandbox executes container workloads using user-space PRoot.
 type ProotSandbox struct{}
 
 var prepareRootFSFn = prepareRootFS
 
-func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
-	for _, m := range script.Mounts {
+// Run executes the container image described by config using proot.
+func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, config Config, args []string) error {
+	var warnGit bool
+	for _, m := range config.Mounts {
 		if m.ReadOnly {
-			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
+			if filepath.Base(m.HostPath) == ".git" {
+				warnGit = true
+			} else {
+				return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
+			}
 		}
 	}
 
-	rootPath := script.Image
+	rootPath := config.Image
 	if rootPath == "" {
 		return fmt.Errorf("ProotSandbox requires an image path (used as root directory)")
 	}
@@ -47,8 +53,8 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 	var cmdPath string
 	var cmdArgs []string
 
-	if script.Entrypoint != "" {
-		cmdPath = script.Entrypoint
+	if config.Entrypoint != "" {
+		cmdPath = config.Entrypoint
 		cmdArgs = append([]string{cmdPath}, args...)
 	} else {
 		// If no entrypoint, use the first argument as command
@@ -60,19 +66,14 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 		}
 	}
 
-	resolvedMounts, err := resolveMounts(script.Mounts, rootFS.imageSHA, script.key)
-	if err != nil {
-		return fmt.Errorf("error resolving mounts: %w", err)
-	}
-
 	// proot -r realRoot [-b host:guest ...] cmdArgs
 	prootArgs := []string{"-r", rootFS.dir}
-	var warnGit bool
-	for _, m := range resolvedMounts {
-		if m.ReadOnly {
-			warnGit = true
+	for _, m := range config.Mounts {
+		validMount, err := validateMount(m)
+		if err != nil {
+			return err
 		}
-		prootArgs = append(prootArgs, "-b", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
+		prootArgs = append(prootArgs, "-b", fmt.Sprintf("%s:%s", validMount.HostPath, validMount.SandboxPath))
 	}
 	if warnGit {
 		if _, err := fmt.Fprintf(stderr, "warning: proot sandbox cannot protect .git from writes\n"); err != nil {
@@ -83,20 +84,20 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 	prootArgs = append(prootArgs, cmdArgs...)
 
 	// Prepare the command
-	cmd := execCommand("proot", prootArgs...)
+	cmd := ExecCommand("proot", prootArgs...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	// We start at root of the new root
-	cmd.Dir = "/"
+	workDir := config.WorkingDir
+	if workDir == "" {
+		workDir = "/"
+	}
+	cmd.Dir = workDir
 
-	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
+	cmd.Env = BuildEnv(rootFS.env, config.Env)
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
 		return fmt.Errorf("error running proot command: %w", err)
 	}
 

@@ -17,6 +17,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gke-labs/clix/sandbox"
 	"sigs.k8s.io/yaml"
 )
 
@@ -32,9 +34,9 @@ var execCommand = exec.Command
 
 func log(level int, format string, v ...any) {
 	verbosity := 0
-	if vStr := os.Getenv("CLIX_LOG_VERBOSITY"); vStr != "" {
-		if _, err := fmt.Sscanf(vStr, "%d", &verbosity); err != nil {
-			fmt.Fprintf(os.Stderr, "clix: failed to parse CLIX_LOG_VERBOSITY %q: %v\n", vStr, err)
+	if verbosityString := os.Getenv("CLIX_LOG_VERBOSITY"); verbosityString != "" {
+		if _, err := fmt.Sscanf(verbosityString, "%d", &verbosity); err != nil {
+			fmt.Fprintf(os.Stderr, "clix: failed to parse CLIX_LOG_VERBOSITY %q: %v\n", verbosityString, err)
 		}
 	}
 	if verbosity >= level {
@@ -42,13 +44,19 @@ func log(level int, format string, v ...any) {
 	}
 }
 
+// Mount is an alias for sandbox.Mount.
+type Mount = sandbox.Mount
+
+// EnvVar is an alias for sandbox.EnvVar.
+type EnvVar = sandbox.EnvVar
+
 type Script struct {
-	Go         *GoConfig    `json:"go,omitempty"`
-	Build      *BuildConfig `json:"build,omitempty"`
-	Image      string       `json:"image,omitempty"`
-	Entrypoint string       `json:"entrypoint,omitempty"`
-	Mounts     []Mount      `json:"mounts,omitempty"`
-	Env        []EnvVar     `json:"env,omitempty"`
+	Go         *GoConfig        `json:"go,omitempty"`
+	Build      *BuildConfig     `json:"build,omitempty"`
+	Image      string           `json:"image,omitempty"`
+	Entrypoint string           `json:"entrypoint,omitempty"`
+	Mounts     []sandbox.Mount  `json:"mounts,omitempty"`
+	Env        []sandbox.EnvVar `json:"env,omitempty"`
 
 	key string
 }
@@ -63,17 +71,6 @@ type BuildConfig struct {
 	Dockerfile string `json:"dockerfile,omitempty"`
 }
 
-type EnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-type Mount struct {
-	HostPath    string `json:"hostPath"`
-	SandboxPath string `json:"sandboxPath,omitempty"`
-	ReadOnly    bool   `json:"readOnly,omitempty"`
-}
-
 type GoConfig struct {
 	Run     string `json:"run"`
 	Version string `json:"version,omitempty"`
@@ -81,12 +78,17 @@ type GoConfig struct {
 
 func main() {
 	if err := run(os.Stdin, os.Stdout, os.Stderr, os.Args); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			os.Exit(exitError.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+	sandbox.ExecCommand = execCommand
 	if len(args) < 2 {
 		return fmt.Errorf("usage: %s <script> [args...]", args[0])
 	}
@@ -119,24 +121,47 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 		script.Image = imageName
 	}
 
-	var sandbox Sandbox
 	sandboxType := os.Getenv("CLIX_SANDBOX")
-	switch sandboxType {
-	case "chroot":
-		sandbox = &ChrootSandbox{}
-	case "proot":
-		sandbox = &ProotSandbox{}
-	case "apple-container":
-		sandbox = &AppleContainerSandbox{}
-	default:
+	if sandboxType == "" {
 		sandboxType = "docker"
-		sandbox = &DockerSandbox{}
+	}
+	selectedSandbox, err := sandbox.New(sandboxType)
+	if err != nil {
+		return err
 	}
 	log(1, "Using sandbox: %s", sandboxType)
 
 	if script.Image != "" {
 		log(1, "Running image: %s", script.Image)
-		return sandbox.Run(stdin, stdout, stderr, script, scriptArgs)
+		imageSHA := ""
+		needsSHA := false
+		for _, m := range script.Mounts {
+			if strings.Contains(m.HostPath, "{cacheDir}") || strings.Contains(m.HostPath, "${cacheDir}") {
+				needsSHA = true
+				break
+			}
+		}
+
+		if needsSHA {
+			var err error
+			imageSHA, err = resolveImageSHAForBackend(sandboxType, script.Image)
+			if err != nil {
+				return fmt.Errorf("failed to get image SHA: %w", err)
+			}
+		}
+
+		resolvedMounts, err := resolveMounts(script.Mounts, imageSHA, script.key)
+		if err != nil {
+			return fmt.Errorf("error resolving mounts: %w", err)
+		}
+
+		config := sandbox.Config{
+			Image:      script.Image,
+			Entrypoint: script.Entrypoint,
+			Mounts:     resolvedMounts,
+			Env:        script.Env,
+		}
+		return selectedSandbox.Run(stdin, stdout, stderr, config, scriptArgs)
 	}
 
 	if script.Go != nil {
@@ -146,11 +171,11 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 			script.Image = "golang:latest"
 
 			// Add cache mounts for Go to speed up subsequent runs
-			script.Mounts = append(script.Mounts, Mount{
+			script.Mounts = append(script.Mounts, sandbox.Mount{
 				HostPath:    "${cacheDir}/gopath",
 				SandboxPath: "/go",
 			})
-			script.Mounts = append(script.Mounts, Mount{
+			script.Mounts = append(script.Mounts, sandbox.Mount{
 				HostPath:    "${cacheDir}/cache",
 				SandboxPath: "/root/.cache",
 			})
@@ -160,12 +185,25 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 			if script.Go.Version != "" {
 				goPackage = fmt.Sprintf("%s@%s", goPackage, script.Go.Version)
 			}
-			// Prepend "go", "run", goPackage to the user arguments
-			// Note: We don't set Entrypoint because runDocker appends Image then Args.
-			// So `docker run ... golang:latest go run pkg args...` works.
 			newArgs := append([]string{"go", "run", goPackage}, scriptArgs...)
 			log(1, "Transformed command: go run %s", goPackage)
-			return sandbox.Run(stdin, stdout, stderr, script, newArgs)
+
+			imageSHA, err := resolveImageSHAForBackend(sandboxType, script.Image)
+			if err != nil {
+				return fmt.Errorf("failed to get image SHA: %w", err)
+			}
+
+			resolvedMounts, err := resolveMounts(script.Mounts, imageSHA, script.key)
+			if err != nil {
+				return fmt.Errorf("error resolving mounts: %w", err)
+			}
+
+			config := sandbox.Config{
+				Image:  script.Image,
+				Mounts: resolvedMounts,
+				Env:    script.Env,
+			}
+			return selectedSandbox.Run(stdin, stdout, stderr, config, newArgs)
 		}
 		log(1, "Running go run: %s", script.Go.Run)
 		return runGo(stdin, stdout, stderr, script.Go, scriptArgs)
@@ -195,10 +233,6 @@ func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []s
 	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			// Propagate the exit code from the subcommand
-			os.Exit(exitErr.ExitCode())
-		}
 		return fmt.Errorf("error running command: %w", err)
 	}
 
@@ -296,7 +330,6 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 		buildArgs = []string{"build", "-t", imageTag, "-f", dockerfile, "."}
 	} else {
 		buildCmd = "docker"
-		// Use standard 'docker build' for better compatibility than 'buildx'
 		buildArgs = []string{"build", "-f", dockerfile, "-t", imageTag, "."}
 	}
 
@@ -391,4 +424,211 @@ func imageExists(tag string) (bool, error) {
 	exists := strings.TrimSpace(string(out)) != ""
 	log(2, "Image exists (%s): %v", tag, exists)
 	return exists, nil
+}
+
+func resolveImageSHAForBackend(sandboxType, image string) (string, error) {
+	if sandboxType == "apple-container" {
+		return getAppleContainerImageSHAFn(image)
+	}
+	return getImageSHAFn(image)
+}
+
+var getImageSHAFn = getImageSHA
+
+func getImageSHA(image string) (string, error) {
+	log(2, "Getting SHA for image: %s", image)
+	cmd := execCommand("docker", "images", "--no-trunc", "--quiet", image)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error running docker images: %w", err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		log(1, "Image %s not found locally, pulling...", image)
+		// Try pulling it
+		pullCmd := execCommand("docker", "pull", image)
+		pullCmd.Stdout = os.Stderr
+		pullCmd.Stderr = os.Stderr
+		if err := pullCmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to pull image %s: %w", image, err)
+		}
+		// Try again
+		cmd = execCommand("docker", "images", "--no-trunc", "--quiet", image)
+		out, err = cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("error running docker images after pull: %w", err)
+		}
+		sha = strings.TrimSpace(string(out))
+	}
+
+	if sha == "" {
+		return "", fmt.Errorf("image still not found after pull: %s", image)
+	}
+
+	// sha is like "sha256:..."
+	if strings.HasPrefix(sha, "sha256:") {
+		sha = sha[7:]
+	}
+	log(2, "Image SHA for %s is %s", image, sha)
+	return sha, nil
+}
+
+var getAppleContainerImageSHAFn = getAppleContainerImageSHA
+
+func getAppleContainerImageSHA(image string) (string, error) {
+	cmd := execCommand("container", "image", "inspect", image)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error running container image inspect: %w", err)
+	}
+
+	var info []struct {
+		Descriptor struct {
+			Digest string `json:"digest"`
+		} `json:"descriptor"`
+		Index struct {
+			Digest string `json:"digest"`
+		} `json:"index"`
+	}
+
+	if err := json.Unmarshal(out, &info); err != nil {
+		return "", fmt.Errorf("failed to parse container image inspect output: %w", err)
+	}
+
+	if len(info) == 0 {
+		return "", fmt.Errorf("no image info found in container image inspect output")
+	}
+
+	digest := info[0].Descriptor.Digest
+	if digest == "" {
+		digest = info[0].Index.Digest
+	}
+	if strings.HasPrefix(digest, "sha256:") {
+		digest = digest[7:]
+	}
+	return digest, nil
+}
+
+func resolveMounts(mounts []sandbox.Mount, imageSHA, scriptKey string) ([]sandbox.Mount, error) {
+	var resolved []sandbox.Mount
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home dir: %w", err)
+	}
+
+	for _, m := range mounts {
+		originalHostPath := m.HostPath
+		var cacheDir string
+		if strings.Contains(m.HostPath, "{cacheDir}") || strings.Contains(m.HostPath, "${cacheDir}") {
+			if strings.Count(m.HostPath, "{cacheDir}") > strings.Count(m.HostPath, "${cacheDir}") {
+				fmt.Fprintf(os.Stderr, "Warning: usage of {cacheDir} is deprecated and will be removed in future versions. Please use ${cacheDir} instead.\n")
+			}
+			if imageSHA == "" {
+				return nil, fmt.Errorf("cacheDir variable used but image SHA not available")
+			}
+			userCache, err := os.UserCacheDir()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user cache dir: %w", err)
+			}
+			// TODO: Eventually we'll need to do garbage collection
+			cacheDir = filepath.Join(userCache, "clix", "cache", imageSHA, scriptKey)
+			if err := os.MkdirAll(cacheDir, 0755); err != nil {
+				return nil, fmt.Errorf("failed to create cache dir: %w", err)
+			}
+			m.HostPath = strings.ReplaceAll(m.HostPath, "${cacheDir}", cacheDir)
+			m.HostPath = strings.ReplaceAll(m.HostPath, "{cacheDir}", cacheDir)
+		}
+
+		isRepoRoot := m.HostPath == "git.repoRoot(cwd)"
+		if isRepoRoot {
+			root, err := findGitRoot(cwd)
+			if err != nil {
+				return nil, fmt.Errorf("failed to find git root: %w", err)
+			}
+			m.HostPath = root
+		}
+
+		if strings.HasPrefix(m.HostPath, "~/") {
+			m.HostPath = filepath.Join(home, m.HostPath[2:])
+		} else if m.HostPath == "~" {
+			m.HostPath = home
+		}
+
+		// TODO: Resolve this better once we find a container image where HOME is not /root
+		if strings.HasPrefix(m.SandboxPath, "~/") {
+			m.SandboxPath = "/root/" + m.SandboxPath[2:]
+		} else if m.SandboxPath == "~" {
+			m.SandboxPath = "/root"
+		}
+
+		m.HostPath = filepath.Clean(m.HostPath)
+
+		if m.SandboxPath == "" {
+			m.SandboxPath = m.HostPath
+		}
+
+		if err := validateScriptMount(m, originalHostPath, cacheDir); err != nil {
+			return nil, err
+		}
+
+		resolved = append(resolved, m)
+		if isRepoRoot {
+			gitMount := sandbox.Mount{
+				HostPath:    filepath.Join(m.HostPath, ".git"),
+				SandboxPath: filepath.Join(m.SandboxPath, ".git"),
+				ReadOnly:    true,
+			}
+			if err := validateScriptMount(gitMount, originalHostPath, cacheDir); err != nil {
+				return nil, err
+			}
+			resolved = append(resolved, gitMount)
+		}
+	}
+	return resolved, nil
+}
+
+func validateScriptMount(m sandbox.Mount, originalHostPath, cacheDir string) error {
+	if !filepath.IsAbs(m.HostPath) {
+		return fmt.Errorf("mount %q: host path is not absolute", originalHostPath)
+	}
+	if cacheDir != "" {
+		rel, err := filepath.Rel(cacheDir, m.HostPath)
+		if err != nil || !filepath.IsLocal(rel) {
+			return fmt.Errorf("mount %q: host path escapes cache directory", originalHostPath)
+		}
+	}
+	if !filepath.IsAbs(m.SandboxPath) {
+		return fmt.Errorf("mount %q: sandbox path %q is not absolute", originalHostPath, m.SandboxPath)
+	}
+	if strings.Contains(m.HostPath, ":") {
+		return fmt.Errorf("mount %q: host path contains ':'", originalHostPath)
+	}
+	if strings.Contains(m.SandboxPath, ":") {
+		return fmt.Errorf("mount %q: sandbox path %q contains ':'", originalHostPath, m.SandboxPath)
+	}
+	return nil
+}
+
+func findGitRoot(path string) (string, error) {
+	dir, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	for {
+		gitEntry := filepath.Join(dir, ".git")
+		if _, err := os.Lstat(gitEntry); err == nil {
+			return dir, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s: %w", gitEntry, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("not a git repository (or any of the parent directories): .git")
+		}
+		dir = parent
+	}
 }
