@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,5 +150,46 @@ func TestProotRepoRootMount(t *testing.T) {
 	expectedWarning := "warning: proot sandbox cannot protect .git from writes\n"
 	if !strings.Contains(stderr.String(), expectedWarning) {
 		t.Errorf("expected stderr to contain %q, got %q", expectedWarning, stderr.String())
+	}
+}
+
+func TestProotFailingToolCleansUpRootFS(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+
+	oldPrepareRootFS := prepareRootFSFn
+	defer func() { prepareRootFSFn = oldPrepareRootFS }()
+	prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
+		return &preparedRootFS{
+			dir:      temporaryDirectory,
+			imageSHA: "mocksha",
+			cleanup: func() {
+				if err := os.RemoveAll(temporaryDirectory); err != nil {
+					t.Errorf("failed to remove temp dir: %v", err)
+				}
+			},
+		}, nil
+	}
+
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+
+	sandbox := &ProotSandbox{}
+	script := Script{
+		Image: "mock-image",
+		Env: []EnvVar{
+			{Name: "GO_WANT_HELPER_PROCESS", Value: "1"},
+			{Name: "MOCK_BEHAVIOR", Value: "exit_42"},
+		},
+	}
+
+	err := sandbox.Run(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"failing-tool"})
+	var exitError *ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 42 {
+		t.Fatalf("expected ExitError with code 42, got %v", err)
+	}
+
+	if _, err := os.Stat(temporaryDirectory); !os.IsNotExist(err) {
+		t.Errorf("expected temporary rootfs %s to be removed, but it still exists", temporaryDirectory)
 	}
 }

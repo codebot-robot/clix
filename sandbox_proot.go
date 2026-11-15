@@ -17,13 +17,10 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 )
 
 type ProotSandbox struct{}
-
-var prepareRootFSFn = prepareRootFS
 
 func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
 	for _, m := range script.Mounts {
@@ -94,8 +91,8 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return newExitError(exitError.ExitCode())
 		}
 		return fmt.Errorf("error running proot command: %w", err)
 	}

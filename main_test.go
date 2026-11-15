@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1189,4 +1190,91 @@ mounts:
 			}
 		})
 	}
+}
+
+func TestBackendExitError(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+	t.Setenv("MOCK_BEHAVIOR", "exit_42")
+
+	t.Run("DockerSandbox", func(t *testing.T) {
+		sandbox := &DockerSandbox{}
+		script := Script{Image: "alpine"}
+		var stdout, stderr bytes.Buffer
+		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, []string{"exit42"})
+		if err == nil {
+			t.Fatalf("expected error from failing tool, got nil")
+		}
+
+		var exitError *ExitError
+		if !errors.As(err, &exitError) {
+			t.Fatalf("expected *ExitError, got %T: %v", err, err)
+		}
+		if exitError.ExitCode() != 42 {
+			t.Errorf("expected exit code 42, got %d", exitError.ExitCode())
+		}
+	})
+
+	t.Run("runGo", func(t *testing.T) {
+		config := &GoConfig{Run: "example.com/tool"}
+		var stdout, stderr bytes.Buffer
+		err := runGo(strings.NewReader(""), &stdout, &stderr, config, []string{"exit42"})
+		if err == nil {
+			t.Fatalf("expected error from failing tool, got nil")
+		}
+
+		var exitError *ExitError
+		if !errors.As(err, &exitError) {
+			t.Fatalf("expected *ExitError, got %T: %v", err, err)
+		}
+		if exitError.ExitCode() != 42 {
+			t.Errorf("expected exit code 42, got %d", exitError.ExitCode())
+		}
+	})
+}
+
+func TestMainExitStatus(t *testing.T) {
+	temporaryDirectory := t.TempDir()
+	runClix := func(t *testing.T, scriptContent, mockBehavior string) (int, string) {
+		t.Helper()
+		scriptPath := filepath.Join(temporaryDirectory, "script.yaml")
+		if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("failed to write script: %v", err)
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperMainProcess", "--", scriptPath)
+		cmd.Env = append(os.Environ(), "GO_WANT_MAIN_HELPER_PROCESS=1", "MOCK_BEHAVIOR="+mockBehavior)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err == nil {
+			return 0, stderr.String()
+		}
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return exitError.ExitCode(), stderr.String()
+		}
+		t.Fatalf("unexpected error running main helper: %v", err)
+		return -1, ""
+	}
+
+	t.Run("ToolExitPassedThroughSilently", func(t *testing.T) {
+		exitCode, stderr := runClix(t, "#!/usr/bin/env clix\nimage: mock-image\n", "exit_42")
+		if exitCode != 42 {
+			t.Errorf("expected exit code 42, got %d", exitCode)
+		}
+		if stderr != "" {
+			t.Errorf("expected empty stderr, got: %q", stderr)
+		}
+	})
+
+	t.Run("HelperFailureProducesErrorMessage", func(t *testing.T) {
+		exitCode, stderr := runClix(t, "#!/usr/bin/env clix\nbuild:\n  git: https://github.com/example/repo\n", "fail_git_clone")
+		if exitCode != 1 {
+			t.Errorf("expected exit code 1, got %d", exitCode)
+		}
+		if !strings.Contains(stderr, "git clone failed") {
+			t.Errorf("expected stderr to contain 'git clone failed', got: %q", stderr)
+		}
+	})
 }

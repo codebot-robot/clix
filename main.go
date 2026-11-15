@@ -81,6 +81,10 @@ type GoConfig struct {
 
 func main() {
 	if err := run(os.Stdin, os.Stdout, os.Stderr, os.Args); err != nil {
+		var exitError *ExitError
+		if errors.As(err, &exitError) {
+			os.Exit(exitError.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -195,9 +199,8 @@ func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []s
 	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			// Propagate the exit code from the subcommand
-			os.Exit(exitErr.ExitCode())
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return newExitError(exitError.ExitCode())
 		}
 		return fmt.Errorf("error running command: %w", err)
 	}

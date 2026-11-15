@@ -51,6 +51,13 @@ func TestHelperProcess(t *testing.T) {
 	cmd, cmdArgs := args[0], args[1:]
 
 	behavior := os.Getenv("MOCK_BEHAVIOR")
+	if behavior == "exit_42" {
+		os.Exit(42)
+	}
+	if behavior == "fail_git_clone" && cmd == "git" && len(cmdArgs) >= 1 && cmdArgs[0] == "clone" {
+		fmt.Fprintf(os.Stderr, "fatal: repository not found\n")
+		os.Exit(128)
+	}
 
 	switch cmd {
 	case "git":
@@ -101,4 +108,21 @@ func TestHelperProcess(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func TestHelperMainProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_MAIN_HELPER_PROCESS") != "1" {
+		return
+	}
+	execCommand = fakeExecCommand
+	testBinary := os.Args[0]
+	var subArgs []string
+	for i, arg := range os.Args {
+		if arg == "--" {
+			subArgs = os.Args[i+1:]
+			break
+		}
+	}
+	os.Args = append([]string{testBinary}, subArgs...)
+	main()
 }
