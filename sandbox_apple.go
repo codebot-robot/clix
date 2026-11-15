@@ -37,9 +37,8 @@ func (s *AppleContainerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, s
 	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			// Propagate the exit code from the subcommand
-			os.Exit(exitErr.ExitCode())
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return newExitError(exitError.ExitCode())
 		}
 		return fmt.Errorf("error running container command: %w", err)
 	}

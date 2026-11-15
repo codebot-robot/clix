@@ -30,7 +30,7 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
 	}
 
-	rootFS, err := prepareRootFS(rootPath)
+	rootFS, err := prepareRootFSFn(rootPath)
 	if err != nil {
 		return err
 	}
@@ -91,8 +91,8 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return newExitError(exitError.ExitCode())
 		}
 		return fmt.Errorf("error running chroot command: %w", err)
 	}

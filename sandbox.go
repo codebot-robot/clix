@@ -33,6 +33,23 @@ type Sandbox interface {
 	Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error
 }
 
+// ExitError indicates that the executed tool exited with a non-zero exit code.
+type ExitError struct {
+	exitCode int
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("exit status %d", e.exitCode)
+}
+
+func (e *ExitError) ExitCode() int {
+	return e.exitCode
+}
+
+func newExitError(exitCode int) *ExitError {
+	return &ExitError{exitCode: exitCode}
+}
+
 type preparedRootFS struct {
 	dir      string
 	imageSHA string
@@ -98,6 +115,8 @@ func prepareRootFS(imageRef string) (*preparedRootFS, error) {
 		cleanup:  cleanup,
 	}, nil
 }
+
+var prepareRootFSFn = prepareRootFS
 
 func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
 	var order []string
