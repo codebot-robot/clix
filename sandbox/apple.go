@@ -48,34 +48,34 @@ func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout
 	return nil
 }
 
-func buildAppleContainerArgs(script Config, args []string, isTerm bool) ([]string, error) {
+func buildAppleContainerArgs(script Config, args []string, terminal bool) ([]string, error) {
 	if err := validateMounts(script.Mounts, ","); err != nil {
 		return nil, err
 	}
 
 	cmdArgs := []string{"run", "--rm"}
-	if isTerm {
+	if terminal {
 		cmdArgs = append(cmdArgs, "-it")
 	}
 
-	for _, m := range script.Mounts {
-		mountArg := fmt.Sprintf("type=bind,source=%s,target=%s", m.HostPath, m.SandboxPath)
-		if m.ReadOnly {
+	for _, mount := range script.Mounts {
+		mountArg := fmt.Sprintf("type=bind,source=%s,target=%s", mount.HostPath, mount.SandboxPath)
+		if mount.ReadOnly {
 			mountArg += ",readonly"
 		}
 		cmdArgs = append(cmdArgs, "--mount", mountArg)
 	}
 
-	for _, e := range script.Env {
-		cmdArgs = append(cmdArgs, "-e", fmt.Sprintf("%s=%s", e.Name, e.Value))
+	for _, envVar := range script.Env {
+		cmdArgs = append(cmdArgs, "-e", fmt.Sprintf("%s=%s", envVar.Name, envVar.Value))
 	}
 
 	// Set working directory to CWD if possible
-	cwd, err := os.Getwd()
+	workingDir, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("error getting current working directory: %w", err)
 	}
-	cmdArgs = append(cmdArgs, "-w", cwd)
+	cmdArgs = append(cmdArgs, "-w", workingDir)
 
 	if script.Entrypoint != "" {
 		cmdArgs = append(cmdArgs, "--entrypoint", script.Entrypoint)

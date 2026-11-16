@@ -70,9 +70,9 @@ func TestProotRepoRootMount(t *testing.T) {
 	}
 	t.Chdir(repoDir)
 
-	oldPrepareRootFS := prepareRootFSFn
-	defer func() { prepareRootFSFn = oldPrepareRootFS }()
-	prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+	oldPrepareRootFS := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+	prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 		return &preparedRootFS{
 			dir:     "/mock/rootfs",
 			cleanup: func() {},
@@ -140,9 +140,9 @@ func TestProotRepoRootMount(t *testing.T) {
 func TestProotFailingToolCleansUpRootFS(t *testing.T) {
 	temporaryDirectory := t.TempDir()
 
-	oldPrepareRootFS := prepareRootFSFn
-	defer func() { prepareRootFSFn = oldPrepareRootFS }()
-	prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+	oldPrepareRootFS := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+	prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 		return &preparedRootFS{
 			dir: temporaryDirectory,
 			cleanup: func() {

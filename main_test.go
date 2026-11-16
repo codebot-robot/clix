@@ -763,9 +763,9 @@ mounts:
 		return fake, "docker", nil
 	}
 
-	oldGetImageSHA := getImageSHAFn
-	defer func() { getImageSHAFn = oldGetImageSHA }()
-	getImageSHAFn = func(string) (string, error) {
+	oldGetImageSHA := getImageSHAFunction
+	defer func() { getImageSHAFunction = oldGetImageSHA }()
+	getImageSHAFunction = func(string) (string, error) {
 		return "mocksha256", nil
 	}
 
@@ -1076,13 +1076,13 @@ func TestCacheDirPerBackend(t *testing.T) {
 		t.Fatalf("failed to get user cache dir: %v", err)
 	}
 
-	oldDockerSHA, oldAppleSHA, oldProotSHA := getImageSHAFn, getAppleContainerImageSHAFn, getProotImageSHAFn
+	oldDockerSHA, oldAppleSHA, oldProotSHA := getImageSHAFunction, getAppleContainerImageSHAFunction, getProotImageSHAFunction
 	defer func() {
-		getImageSHAFn, getAppleContainerImageSHAFn, getProotImageSHAFn = oldDockerSHA, oldAppleSHA, oldProotSHA
+		getImageSHAFunction, getAppleContainerImageSHAFunction, getProotImageSHAFunction = oldDockerSHA, oldAppleSHA, oldProotSHA
 	}()
-	getImageSHAFn = func(string) (string, error) { return "dockersha123", nil }
-	getAppleContainerImageSHAFn = func(string) (string, error) { return "applesha123", nil }
-	getProotImageSHAFn = func(string) (string, error) { return "prootsha123", nil }
+	getImageSHAFunction = func(string) (string, error) { return "dockersha123", nil }
+	getAppleContainerImageSHAFunction = func(string) (string, error) { return "applesha123", nil }
+	getProotImageSHAFunction = func(string) (string, error) { return "prootsha123", nil }
 
 	for _, syntax := range []struct {
 		name, hostPath string
@@ -1098,10 +1098,10 @@ func TestCacheDirPerBackend(t *testing.T) {
 			{"proot", "prootsha123"},
 		} {
 			t.Run(testCase.backend+"_"+syntax.name, func(t *testing.T) {
-				localGetImageSHA := getImageSHAFn
-				defer func() { getImageSHAFn = localGetImageSHA }()
+				localGetImageSHA := getImageSHAFunction
+				defer func() { getImageSHAFunction = localGetImageSHA }()
 				if testCase.backend == "proot" {
-					getImageSHAFn = func(string) (string, error) {
+					getImageSHAFunction = func(string) (string, error) {
 						t.Fatal("proot must not depend on docker for image digest")
 						return "", nil
 					}
