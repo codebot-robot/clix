@@ -33,17 +33,15 @@ import (
 
 var execCommand = exec.Command
 
-var newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
-	switch sandboxType {
-	case "chroot":
-		return &sandbox.ChrootSandbox{}, "chroot"
-	case "proot":
-		return &sandbox.ProotSandbox{}, "proot"
-	case "apple-container":
-		return &sandbox.AppleContainerSandbox{}, "apple-container"
-	default:
-		return &sandbox.DockerSandbox{}, "docker"
+var newSandbox = func(sandboxType string) (sandbox.Sandbox, string, error) {
+	if sandboxType == "" {
+		sandboxType = "docker"
 	}
+	backend, err := sandbox.New(sandboxType)
+	if err != nil {
+		return nil, "", err
+	}
+	return backend, sandboxType, nil
 }
 
 type clixLogSink struct {
@@ -203,7 +201,10 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 		script.Image = imageName
 	}
 
-	backend, sandboxType := newSandbox(os.Getenv("CLIX_SANDBOX"))
+	backend, sandboxType, err := newSandbox(os.Getenv("CLIX_SANDBOX"))
+	if err != nil {
+		return err
+	}
 	log(1, "Using sandbox: %s", sandboxType)
 
 	var runArgs []string

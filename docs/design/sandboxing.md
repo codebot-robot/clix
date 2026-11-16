@@ -76,4 +76,63 @@ docker run \
   go run github.com/example/tool
 ```
 
+## Library Usage
+
+The sandboxing can be imported as a library (`github.com/gke-labs/clix/sandbox`). A caller can select a backend by name or from `CLIX_SANDBOX`, configure mounts and environment variables, pass a logger via `context.Context`, wire I/O streams, and receive tool execution failures as `*sandbox.ExitError`.
+
+### Example
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/gke-labs/clix/sandbox"
+)
+
+func main() {
+	backend, err := sandbox.FromEnvironment()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to select sandbox: %v\n", err)
+		os.Exit(1)
+	}
+
+	config := sandbox.Config{
+		Image: "alpine:latest",
+		Mounts: []sandbox.Mount{
+			{
+				HostPath:    "/path/to/host/dir",
+				SandboxPath: "/workspace",
+				ReadOnly:    true,
+			},
+		},
+		Env: []sandbox.EnvVar{
+			{
+				Name:  "FOO",
+				Value: "bar",
+			},
+		},
+	}
+
+	err = backend.Run(context.Background(), os.Stdin, os.Stdout, os.Stderr, config, []string{"echo", "hello"})
+	if err != nil {
+		var exitError *sandbox.ExitError
+		if errors.As(err, &exitError) {
+			os.Exit(exitError.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "sandbox run failed: %v\n", err)
+		os.Exit(1)
+	}
+}
 ```
+
+### Platform Limits
+
+*   **`docker`**: Requires a running Docker daemon. Supported on Linux, macOS, and other platforms where Docker is available.
+*   **`apple-container`**: Requires macOS with the `container` CLI installed.
+*   **`chroot`**: Supported only on Linux; fails on other platforms. Requires root privileges or unprivileged user namespace support. Does not support mounts.
+*   **`proot`**: Requires `proot` installed in `$PATH`. Supported on Linux. Does not support read-only mounts unless fallback is allowed.

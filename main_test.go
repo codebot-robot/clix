@@ -783,8 +783,8 @@ mounts:
 	fake := &recordingSandbox{}
 	oldNewSandbox := newSandbox
 	defer func() { newSandbox = oldNewSandbox }()
-	newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
-		return fake, "docker"
+	newSandbox = func(sandboxType string) (sandbox.Sandbox, string, error) {
+		return fake, "docker", nil
 	}
 
 	oldGetImageSHA := getImageSHAFn
@@ -989,8 +989,8 @@ mounts:
 			fake := &recordingSandbox{}
 			oldNewSandbox := newSandbox
 			defer func() { newSandbox = oldNewSandbox }()
-			newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
-				return fake, "docker"
+			newSandbox = func(sandboxType string) (sandbox.Sandbox, string, error) {
+				return fake, "docker", nil
 			}
 
 			tmpDir := t.TempDir()
@@ -1187,4 +1187,26 @@ func TestClixLogSink(t *testing.T) {
 			t.Errorf("got %q, want %q", actualOutput, expectedOutput)
 		}
 	})
+}
+
+func TestUnrecognisedSandboxBackend(t *testing.T) {
+	t.Setenv("CLIX_SANDBOX", "bogus")
+	temporaryDirectory := t.TempDir()
+	scriptPath := filepath.Join(temporaryDirectory, "script.yaml")
+	scriptContent := `#!/usr/bin/env clix
+image: alpine
+`
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := run(strings.NewReader(""), &stdout, &stderr, []string{"clix", scriptPath})
+	if err == nil {
+		t.Fatal("expected error for unrecognised sandbox backend, got nil")
+	}
+	expectedErrorMessage := `unknown sandbox backend "bogus"`
+	if !strings.Contains(err.Error(), expectedErrorMessage) {
+		t.Errorf("got error %q, want it to contain %q", err.Error(), expectedErrorMessage)
+	}
 }

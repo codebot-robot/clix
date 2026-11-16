@@ -23,8 +23,8 @@ import (
 	"runtime"
 )
 
-type ChrootSandbox struct{}
+type chrootSandbox struct{}
 
-func (s *ChrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	return fmt.Errorf("chroot sandbox is not supported on %s", runtime.GOOS)
 }

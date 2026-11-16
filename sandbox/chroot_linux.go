@@ -23,9 +23,9 @@ import (
 	"syscall"
 )
 
-type ChrootSandbox struct{}
+type chrootSandbox struct{}
 
-func (s *ChrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	rootPath := script.Image
 	if rootPath == "" {
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")

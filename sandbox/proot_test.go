@@ -26,7 +26,7 @@ import (
 )
 
 func TestProotReadOnlyMountRejected(t *testing.T) {
-	sandbox := &ProotSandbox{}
+	sandbox := &prootSandbox{}
 	script := Config{
 		Image: "test-image",
 		Mounts: []Mount{
@@ -45,7 +45,7 @@ func TestProotReadOnlyMountRejected(t *testing.T) {
 }
 
 func TestProotReadOnlyMountDeclaredByScriptRejectedEvenIfNamedGit(t *testing.T) {
-	sandbox := &ProotSandbox{}
+	sandbox := &prootSandbox{}
 	script := Config{
 		Image: "test-image",
 		Mounts: []Mount{
@@ -89,7 +89,7 @@ func TestProotRepoRootMount(t *testing.T) {
 		return fakeExecCommand(name, args...)
 	}
 
-	sandbox := &ProotSandbox{}
+	sandbox := &prootSandbox{}
 	script := Config{
 		Image: "mock-image",
 		Mounts: []Mount{
@@ -157,7 +157,7 @@ func TestProotFailingToolCleansUpRootFS(t *testing.T) {
 	defer func() { execCommand = oldExecCommand }()
 	execCommand = fakeExecCommand
 
-	sandbox := &ProotSandbox{}
+	sandbox := &prootSandbox{}
 	script := Config{
 		Image: "mock-image",
 		Env: []EnvVar{

@@ -132,7 +132,7 @@ func TestBackendExitError(t *testing.T) {
 	t.Setenv("MOCK_BEHAVIOR", "exit_42")
 
 	t.Run("DockerSandbox", func(t *testing.T) {
-		sandbox := &DockerSandbox{}
+		sandbox := &dockerSandbox{}
 		script := Config{Image: "alpine"}
 		var stdout, stderr bytes.Buffer
 		err := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, []string{"exit42"})
