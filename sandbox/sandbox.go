@@ -66,16 +66,53 @@ type EnvVar struct {
 }
 
 // Mount describes a host directory mounted into the sandbox.
+// Both HostPath and SandboxPath are required, must be absolute paths, and
+// must not contain characters that alter the meaning of backend mount arguments
+// (such as ':' for docker and proot, or ',' for apple-container).
 type Mount struct {
-	// HostPath is the path to the directory on the host.
+	// HostPath is the absolute path to the directory on the host. Required.
+	// It must not be empty or relative, and must not contain backend delimiters
+	// (such as ':' for docker and proot, or ',' for apple-container).
 	HostPath string `json:"hostPath"`
-	// SandboxPath is an absolute path inside the sandbox, required.
+	// SandboxPath is the absolute path inside the sandbox container. Required.
+	// It must not be empty or relative, and must not contain backend delimiters
+	// (such as ':' for docker and proot, or ',' for apple-container).
 	SandboxPath string `json:"sandboxPath,omitempty"`
 	// ReadOnly specifies whether the mount should be read-only.
 	ReadOnly bool `json:"readOnly,omitempty"`
 	// WritableFallback allows backends that do not support read-only mounts
 	// (such as proot) to fall back to a writable mount.
 	WritableFallback bool `json:"-"`
+}
+
+func validateMounts(mounts []Mount, delimiter string) error {
+	for _, mount := range mounts {
+		name := mount.HostPath
+		if name == "" {
+			name = mount.SandboxPath
+		}
+		if mount.HostPath == "" {
+			return fmt.Errorf("mount %q: host path is empty", name)
+		}
+		if !filepath.IsAbs(mount.HostPath) {
+			return fmt.Errorf("mount %q: host path is not absolute", name)
+		}
+		if mount.SandboxPath == "" {
+			return fmt.Errorf("mount %q: sandbox path is empty", name)
+		}
+		if !filepath.IsAbs(mount.SandboxPath) {
+			return fmt.Errorf("mount %q: sandbox path %q is not absolute", name, mount.SandboxPath)
+		}
+		if delimiter != "" {
+			if strings.Contains(mount.HostPath, delimiter) {
+				return fmt.Errorf("mount %q: host path contains '%s'", name, delimiter)
+			}
+			if strings.Contains(mount.SandboxPath, delimiter) {
+				return fmt.Errorf("mount %q: sandbox path %q contains '%s'", name, mount.SandboxPath, delimiter)
+			}
+		}
+	}
+	return nil
 }
 
 // ExitError indicates that the executed tool exited with a non-zero exit code.

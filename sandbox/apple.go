@@ -31,7 +31,7 @@ func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout
 
 	cmdArgs, err := buildAppleContainerArgs(script, args, isTerminal(stdin))
 	if err != nil {
-		return fmt.Errorf("error building apple/container args: %w", err)
+		return err
 	}
 
 	cmd := execCommand("container", cmdArgs...)
@@ -49,6 +49,10 @@ func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout
 }
 
 func buildAppleContainerArgs(script Config, args []string, isTerm bool) ([]string, error) {
+	if err := validateMounts(script.Mounts, ","); err != nil {
+		return nil, err
+	}
+
 	cmdArgs := []string{"run", "--rm"}
 	if isTerm {
 		cmdArgs = append(cmdArgs, "-it")

@@ -140,23 +140,11 @@ func resolveScriptMounts(mounts []sandbox.Mount, sandboxType, image, scriptKey s
 }
 
 func validateMount(m sandbox.Mount, origHostPath, cacheDir string) error {
-	if !filepath.IsAbs(m.HostPath) {
-		return fmt.Errorf("mount %q: host path is not absolute", origHostPath)
-	}
 	if cacheDir != "" {
 		rel, err := filepath.Rel(cacheDir, m.HostPath)
 		if err != nil || !filepath.IsLocal(rel) {
 			return fmt.Errorf("mount %q: host path escapes cache directory", origHostPath)
 		}
-	}
-	if !filepath.IsAbs(m.SandboxPath) {
-		return fmt.Errorf("mount %q: sandbox path %q is not absolute", origHostPath, m.SandboxPath)
-	}
-	if strings.Contains(m.HostPath, ":") {
-		return fmt.Errorf("mount %q: host path contains ':'", origHostPath)
-	}
-	if strings.Contains(m.SandboxPath, ":") {
-		return fmt.Errorf("mount %q: sandbox path %q contains ':'", origHostPath, m.SandboxPath)
 	}
 	return nil
 }
