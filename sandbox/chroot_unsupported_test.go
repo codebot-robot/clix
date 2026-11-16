@@ -14,16 +14,28 @@
 
 //go:build !linux
 
-package main
+package sandbox
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"runtime"
+	"strings"
+	"testing"
 )
 
-type ChrootSandbox struct{}
+func TestChrootUnsupported(t *testing.T) {
+	sandbox := &ChrootSandbox{}
+	script := Config{
+		Image: "test-image",
+	}
 
-func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
-	return fmt.Errorf("chroot sandbox is not supported on %s", runtime.GOOS)
+	err := sandbox.Run(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hello"})
+	if err == nil {
+		t.Fatalf("expected error for chroot sandbox on unsupported platform, got nil")
+	}
+	expected := fmt.Sprintf("chroot sandbox is not supported on %s", runtime.GOOS)
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("expected error %q, got %q", expected, err.Error())
+	}
 }

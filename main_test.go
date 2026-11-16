@@ -20,13 +20,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
+	"github.com/gke-labs/clix/sandbox"
 	"sigs.k8s.io/yaml"
 )
 
@@ -122,21 +123,21 @@ func TestResolveMounts(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		input       []Mount
+		input       []sandbox.Mount
 		imageSHA    string
 		scriptKey   string
-		expected    []Mount
+		expected    []sandbox.Mount
 		wantErr     bool
 		errContains string
 	}{
 		{
 			name: "Home directory expansion",
-			input: []Mount{
+			input: []sandbox.Mount{
 				{HostPath: "~/.config"},
 				{HostPath: "~/data"},
 				{HostPath: "~"},
 			},
-			expected: []Mount{
+			expected: []sandbox.Mount{
 				{HostPath: filepath.Join(home, ".config"), SandboxPath: filepath.Join(home, ".config")},
 				{HostPath: filepath.Join(home, "data"), SandboxPath: filepath.Join(home, "data")},
 				{HostPath: home, SandboxPath: home},
@@ -144,21 +145,21 @@ func TestResolveMounts(t *testing.T) {
 		},
 		{
 			name: "No expansion",
-			input: []Mount{
+			input: []sandbox.Mount{
 				{HostPath: "/absolute/path"},
 			},
-			expected: []Mount{
+			expected: []sandbox.Mount{
 				{HostPath: "/absolute/path", SandboxPath: "/absolute/path"},
 			},
 		},
 		{
 			name: "Sandbox path tilde expansion",
-			input: []Mount{
+			input: []sandbox.Mount{
 				{HostPath: "/tmp", SandboxPath: "~/.config"},
 				{HostPath: "/tmp", SandboxPath: "~/data"},
 				{HostPath: "/tmp", SandboxPath: "~"},
 			},
-			expected: []Mount{
+			expected: []sandbox.Mount{
 				{HostPath: "/tmp", SandboxPath: "/root/.config"},
 				{HostPath: "/tmp", SandboxPath: "/root/data"},
 				{HostPath: "/tmp", SandboxPath: "/root"},
@@ -166,19 +167,19 @@ func TestResolveMounts(t *testing.T) {
 		},
 		{
 			name:      "Cache directory expansion",
-			input:     []Mount{{HostPath: "${cacheDir}/pycache"}, {HostPath: "{cacheDir}/oldcache"}},
+			input:     []sandbox.Mount{{HostPath: "${cacheDir}/pycache"}, {HostPath: "{cacheDir}/oldcache"}},
 			imageSHA:  "abc",
 			scriptKey: "key1",
 		},
 		{
 			name:        "Rule 1: host path not absolute rejected",
-			input:       []Mount{{HostPath: "relative/path"}},
+			input:       []sandbox.Mount{{HostPath: "relative/path"}},
 			wantErr:     true,
 			errContains: "relative/path",
 		},
 		{
 			name:        "Rule 2: cache path escaping cache directory rejected",
-			input:       []Mount{{HostPath: "${cacheDir}/../escape"}},
+			input:       []sandbox.Mount{{HostPath: "${cacheDir}/../escape"}},
 			imageSHA:    "abc",
 			scriptKey:   "key1",
 			wantErr:     true,
@@ -186,28 +187,28 @@ func TestResolveMounts(t *testing.T) {
 		},
 		{
 			name:        "Rule 3: sandbox path not absolute rejected",
-			input:       []Mount{{HostPath: "/tmp", SandboxPath: "relative/sandbox"}},
+			input:       []sandbox.Mount{{HostPath: "/tmp", SandboxPath: "relative/sandbox"}},
 			wantErr:     true,
 			errContains: "relative/sandbox",
 		},
 		{
 			name:        "Rule 4: host path containing colon rejected",
-			input:       []Mount{{HostPath: "/tmp/has:colon", SandboxPath: "/tmp"}},
+			input:       []sandbox.Mount{{HostPath: "/tmp/has:colon", SandboxPath: "/tmp"}},
 			wantErr:     true,
 			errContains: "/tmp/has:colon",
 		},
 		{
 			name:        "Rule 4: sandbox path containing colon rejected",
-			input:       []Mount{{HostPath: "/tmp", SandboxPath: "/sandbox:colon"}},
+			input:       []sandbox.Mount{{HostPath: "/tmp", SandboxPath: "/sandbox:colon"}},
 			wantErr:     true,
 			errContains: "/sandbox:colon",
 		},
 		{
 			name:      "Redundant .. inside cache directory accepted and cleaned",
-			input:     []Mount{{HostPath: "${cacheDir}/sub/../clean"}},
+			input:     []sandbox.Mount{{HostPath: "${cacheDir}/sub/../clean"}},
 			imageSHA:  "abc",
 			scriptKey: "key1",
-			expected: []Mount{
+			expected: []sandbox.Mount{
 				{
 					HostPath:    filepath.Join(userCache, "clix", "cache", "abc", "key1", "clean"),
 					SandboxPath: filepath.Join(userCache, "clix", "cache", "abc", "key1", "clean"),
@@ -271,13 +272,13 @@ func TestResolveMounts(t *testing.T) {
 		t.Chdir(repoDir)
 
 		t.Run("repo-root mount yields root followed by read-only .git", func(t *testing.T) {
-			got, err := resolveMounts([]Mount{
+			got, err := resolveMounts([]sandbox.Mount{
 				{HostPath: "git.repoRoot(cwd)"},
 			}, "", "")
 			if err != nil {
 				t.Fatalf("resolveMounts failed: %v", err)
 			}
-			expected := []Mount{
+			expected := []sandbox.Mount{
 				{HostPath: repoDir, SandboxPath: repoDir, ReadOnly: false},
 				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: filepath.Join(repoDir, ".git"), ReadOnly: true, WritableFallback: true},
 			}
@@ -292,13 +293,13 @@ func TestResolveMounts(t *testing.T) {
 		})
 
 		t.Run("custom sandboxPath places .git under it", func(t *testing.T) {
-			got, err := resolveMounts([]Mount{
+			got, err := resolveMounts([]sandbox.Mount{
 				{HostPath: "git.repoRoot(cwd)", SandboxPath: "/custom/sandbox"},
 			}, "", "")
 			if err != nil {
 				t.Fatalf("resolveMounts failed: %v", err)
 			}
-			expected := []Mount{
+			expected := []sandbox.Mount{
 				{HostPath: repoDir, SandboxPath: "/custom/sandbox", ReadOnly: false},
 				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: "/custom/sandbox/.git", ReadOnly: true, WritableFallback: true},
 			}
@@ -319,13 +320,13 @@ func TestResolveMounts(t *testing.T) {
 			}
 			t.Chdir(worktreeDir)
 
-			got, err := resolveMounts([]Mount{
+			got, err := resolveMounts([]sandbox.Mount{
 				{HostPath: "git.repoRoot(cwd)"},
 			}, "", "")
 			if err != nil {
 				t.Fatalf("resolveMounts failed: %v", err)
 			}
-			expected := []Mount{
+			expected := []sandbox.Mount{
 				{HostPath: worktreeDir, SandboxPath: worktreeDir, ReadOnly: false},
 				{HostPath: filepath.Join(worktreeDir, ".git"), SandboxPath: filepath.Join(worktreeDir, ".git"), ReadOnly: true, WritableFallback: true},
 			}
@@ -341,7 +342,7 @@ func TestResolveMounts(t *testing.T) {
 	})
 
 	t.Run("Key isolation and repeatability", func(t *testing.T) {
-		mounts := []Mount{{HostPath: "${cacheDir}/data"}}
+		mounts := []sandbox.Mount{{HostPath: "${cacheDir}/data"}}
 		resKey1A, err := resolveMounts(mounts, "abc", "key1")
 		if err != nil {
 			t.Fatalf("resolveMounts failed: %v", err)
@@ -362,194 +363,6 @@ func TestResolveMounts(t *testing.T) {
 			t.Errorf("expected different keys with same image SHA to resolve to different directories, both got %q", resKey1A[0].HostPath)
 		}
 	})
-}
-
-func TestBuildDockerArgs(t *testing.T) {
-	// Mock getImageSHA
-	originalGetImageSHA := getImageSHAFn
-	defer func() { getImageSHAFn = originalGetImageSHA }()
-	getImageSHAFn = func(image string) (string, error) {
-		return "mocksha256", nil
-	}
-
-	// 1. Basic case
-	script := Script{
-		Image: "python:3.11",
-	}
-	args := []string{"script.py"}
-	cmdArgs, err := buildDockerArgs(script, args, false)
-	if err != nil {
-		t.Fatalf("buildDockerArgs failed: %v", err)
-	}
-	// Check basics
-	// cmdArgs: [run --rm -i -w ... image args...]
-	if len(cmdArgs) < 3 || cmdArgs[0] != "run" || cmdArgs[1] != "--rm" || cmdArgs[2] != "-i" {
-		t.Errorf("Expected cmdArgs to start with [run, --rm, -i], got %v", cmdArgs)
-	}
-	foundRun := false
-	foundRm := false
-	foundImage := false
-	for _, arg := range cmdArgs {
-		if arg == "run" {
-			foundRun = true
-		}
-		if arg == "--rm" {
-			foundRm = true
-		}
-		if arg == "python:3.11" {
-			foundImage = true
-		}
-	}
-	if !foundRun {
-		t.Errorf("Expected 'run' in args, got %v", cmdArgs)
-	}
-	if !foundRm {
-		t.Errorf("Expected '--rm' in args, got %v", cmdArgs)
-	}
-	if !foundImage {
-		t.Errorf("Expected image python:3.11 in args, got %v", cmdArgs)
-	}
-
-	termArgs, err := buildDockerArgs(script, args, true)
-	if err != nil {
-		t.Fatalf("buildDockerArgs with isTerm=true failed: %v", err)
-	}
-	if len(termArgs) < 4 || termArgs[0] != "run" || termArgs[1] != "--rm" || termArgs[2] != "-i" || termArgs[3] != "-t" {
-		t.Errorf("Expected termArgs to start with [run, --rm, -i, -t], got %v", termArgs)
-	}
-
-	// 2. Python cache enabled via explicit mounts and env
-	scriptPython := Script{
-		Image: "python:3.11",
-		Mounts: []Mount{
-			{HostPath: "{cacheDir}/python", SandboxPath: "/tmp/.clix-pycache"},
-		},
-		Env: []EnvVar{
-			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
-		},
-	}
-	scriptPython.Mounts, err = resolveScriptMounts(scriptPython.Mounts, "docker", scriptPython.Image, scriptPython.key)
-	if err != nil {
-		t.Fatalf("resolveScriptMounts failed: %v", err)
-	}
-	cmdArgs, err = buildDockerArgs(scriptPython, args, false)
-	if err != nil {
-		t.Fatalf("buildDockerArgs failed: %v", err)
-	}
-
-	// Check for env var and mount
-	foundEnv := false
-	foundMount := false
-
-	cacheMountDest := "/tmp/.clix-pycache"
-	envVar := "PYTHONPYCACHEPREFIX=" + cacheMountDest
-
-	// We expect the mount path to contain the SHA
-	expectedHostPathPart := "mocksha256/python"
-
-	for i, arg := range cmdArgs {
-		if arg == "-e" && i+1 < len(cmdArgs) && cmdArgs[i+1] == envVar {
-			foundEnv = true
-		}
-		if arg == "-v" && i+1 < len(cmdArgs) && strings.Contains(cmdArgs[i+1], ":"+cacheMountDest) {
-			if strings.Contains(cmdArgs[i+1], expectedHostPathPart) {
-				foundMount = true
-			}
-		}
-	}
-
-	if !foundEnv {
-		t.Errorf("Expected environment variable %s, got args: %v", envVar, cmdArgs)
-	}
-	if !foundMount {
-		t.Errorf("Expected mount for %s with host path containing %s, got args: %v", cacheMountDest, expectedHostPathPart, cmdArgs)
-	}
-
-	// 3. Python cache enabled via explicit mounts and env using ${cacheDir}
-	scriptPythonNew := Script{
-		Image: "python:3.11",
-		Mounts: []Mount{
-			{HostPath: "${cacheDir}/python", SandboxPath: "/tmp/.clix-pycache"},
-		},
-		Env: []EnvVar{
-			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
-		},
-	}
-	scriptPythonNew.Mounts, err = resolveScriptMounts(scriptPythonNew.Mounts, "docker", scriptPythonNew.Image, scriptPythonNew.key)
-	if err != nil {
-		t.Fatalf("resolveScriptMounts failed: %v", err)
-	}
-	cmdArgs, err = buildDockerArgs(scriptPythonNew, args, false)
-	if err != nil {
-		t.Fatalf("buildDockerArgs failed: %v", err)
-	}
-
-	// Check for env var and mount
-	foundEnv = false
-	foundMount = false
-
-	for i, arg := range cmdArgs {
-		if arg == "-e" && i+1 < len(cmdArgs) && cmdArgs[i+1] == envVar {
-			foundEnv = true
-		}
-		if arg == "-v" && i+1 < len(cmdArgs) && strings.Contains(cmdArgs[i+1], ":"+cacheMountDest) {
-			if strings.Contains(cmdArgs[i+1], expectedHostPathPart) {
-				foundMount = true
-			}
-		}
-	}
-
-	if !foundEnv {
-		t.Errorf("Expected environment variable %s, got args: %v", envVar, cmdArgs)
-	}
-	if !foundMount {
-		t.Errorf("Expected mount for %s with host path containing %s, got args: %v", cacheMountDest, expectedHostPathPart, cmdArgs)
-	}
-
-	// 4. Mount read-only table cases
-	mountTests := []struct {
-		name         string
-		mounts       []Mount
-		expectedArgs []string
-	}{
-		{
-			name: "Read-only mount",
-			mounts: []Mount{
-				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: true},
-			},
-			expectedArgs: []string{"-v", "/host/path:/sandbox/path:ro"},
-		},
-		{
-			name: "Read-write mount",
-			mounts: []Mount{
-				{HostPath: "/host/path", SandboxPath: "/sandbox/path", ReadOnly: false},
-			},
-			expectedArgs: []string{"-v", "/host/path:/sandbox/path"},
-		},
-	}
-
-	for _, tt := range mountTests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := Script{
-				Image:  "python:3.11",
-				Mounts: tt.mounts,
-			}
-			cmdArgs, err := buildDockerArgs(s, args, false)
-			if err != nil {
-				t.Fatalf("buildDockerArgs failed: %v", err)
-			}
-			found := false
-			for i := 0; i < len(cmdArgs)-1; i++ {
-				if cmdArgs[i] == tt.expectedArgs[0] && cmdArgs[i+1] == tt.expectedArgs[1] {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("Expected args %v in cmdArgs %v", tt.expectedArgs, cmdArgs)
-			}
-		})
-	}
 }
 
 func TestBuildImage(t *testing.T) {
@@ -930,6 +743,15 @@ func TestGetRemoteHead(t *testing.T) {
 	})
 }
 
+type recordingSandbox struct {
+	configs []sandbox.Config
+}
+
+func (s *recordingSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
+	s.configs = append(s.configs, script)
+	return nil
+}
+
 func TestRunCacheKeyPerScript(t *testing.T) {
 	t.Setenv("CLIX_SANDBOX", "docker")
 
@@ -956,19 +778,17 @@ mounts:
 		t.Fatalf("Failed to write script2: %v", err)
 	}
 
-	var dockerRuns [][]string
-	oldExec := execCommand
-	defer func() { execCommand = oldExec }()
+	fake := &recordingSandbox{}
+	oldNewSandbox := newSandbox
+	defer func() { newSandbox = oldNewSandbox }()
+	newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
+		return fake, "docker"
+	}
 
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		if name == "docker" && len(args) > 0 && args[0] == "run" {
-			dockerRuns = append(dockerRuns, args)
-		}
-		cs := []string{"-test.run=TestHelperDockerProcess", "--", name}
-		cs = append(cs, args...)
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(), "GO_WANT_DOCKER_HELPER_PROCESS=1")
-		return cmd
+	oldGetImageSHA := getImageSHAFn
+	defer func() { getImageSHAFn = oldGetImageSHA }()
+	getImageSHAFn = func(string) (string, error) {
+		return "mocksha256", nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -981,30 +801,27 @@ mounts:
 		t.Fatalf("run script2 failed: %v", err)
 	}
 
-	if len(dockerRuns) != 2 {
-		t.Fatalf("expected 2 docker run executions, got %d", len(dockerRuns))
+	if len(fake.configs) != 2 {
+		t.Fatalf("expected 2 runs, got %d", len(fake.configs))
 	}
 
-	findCacheMount := func(args []string) string {
-		for i, arg := range args {
-			if arg == "-v" && i+1 < len(args) {
-				parts := strings.Split(args[i+1], ":")
-				if len(parts) >= 2 && parts[1] == "/data" {
-					return parts[0]
-				}
+	findCacheMount := func(c sandbox.Config) string {
+		for _, m := range c.Mounts {
+			if m.SandboxPath == "/data" {
+				return m.HostPath
 			}
 		}
 		return ""
 	}
 
-	hostPath1 := findCacheMount(dockerRuns[0])
-	hostPath2 := findCacheMount(dockerRuns[1])
+	hostPath1 := findCacheMount(fake.configs[0])
+	hostPath2 := findCacheMount(fake.configs[1])
 
 	if hostPath1 == "" {
-		t.Fatalf("failed to find cache mount in docker argv 1: %v", dockerRuns[0])
+		t.Fatalf("failed to find cache mount in script1: %+v", fake.configs[0].Mounts)
 	}
 	if hostPath2 == "" {
-		t.Fatalf("failed to find cache mount in docker argv 2: %v", dockerRuns[1])
+		t.Fatalf("failed to find cache mount in script2: %+v", fake.configs[1].Mounts)
 	}
 	if hostPath1 == hostPath2 {
 		t.Errorf("expected different host cache paths for two scripts, got %q for both", hostPath1)
@@ -1139,7 +956,7 @@ func TestRunReadOnlyMount(t *testing.T) {
 	tests := []struct {
 		name          string
 		scriptContent string
-		expectedArg   string
+		wantReadOnly  bool
 	}{
 		{
 			name: "readOnly true in yaml",
@@ -1150,7 +967,7 @@ mounts:
   sandboxPath: /tmp/sandbox
   readOnly: true
 `,
-			expectedArg: "/tmp/host:/tmp/sandbox:ro",
+			wantReadOnly: true,
 		},
 		{
 			name: "readOnly false in yaml",
@@ -1161,19 +978,18 @@ mounts:
   sandboxPath: /tmp/sandbox
   readOnly: false
 `,
-			expectedArg: "/tmp/host:/tmp/sandbox",
+			wantReadOnly: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var capturedArgs []string
-			oldExecCommand := execCommand
-			execCommand = func(name string, arg ...string) *exec.Cmd {
-				capturedArgs = arg
-				return fakeExecCommand(name, arg...)
+			fake := &recordingSandbox{}
+			oldNewSandbox := newSandbox
+			defer func() { newSandbox = oldNewSandbox }()
+			newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
+				return fake, "docker"
 			}
-			defer func() { execCommand = oldExecCommand }()
 
 			tmpDir := t.TempDir()
 			scriptPath := filepath.Join(tmpDir, "script.yaml")
@@ -1187,15 +1003,21 @@ mounts:
 				t.Fatalf("run failed: %v", err)
 			}
 
+			if len(fake.configs) != 1 {
+				t.Fatalf("expected 1 run, got %d", len(fake.configs))
+			}
 			foundMount := false
-			for i := 0; i < len(capturedArgs)-1; i++ {
-				if capturedArgs[i] == "-v" && capturedArgs[i+1] == tt.expectedArg {
+			for _, m := range fake.configs[0].Mounts {
+				if m.HostPath == "/tmp/host" && m.SandboxPath == "/tmp/sandbox" {
+					if m.ReadOnly != tt.wantReadOnly {
+						t.Errorf("expected mount ReadOnly=%v, got %v", tt.wantReadOnly, m.ReadOnly)
+					}
 					foundMount = true
 					break
 				}
 			}
 			if !foundMount {
-				t.Errorf("expected mount arg %q in %v", tt.expectedArg, capturedArgs)
+				t.Errorf("expected mount /tmp/host:/tmp/sandbox in %+v", fake.configs[0].Mounts)
 			}
 		})
 	}
@@ -1207,24 +1029,6 @@ func TestBackendExitError(t *testing.T) {
 	execCommand = fakeExecCommand
 	t.Setenv("MOCK_BEHAVIOR", "exit_42")
 
-	t.Run("DockerSandbox", func(t *testing.T) {
-		sandbox := &DockerSandbox{}
-		script := Script{Image: "alpine"}
-		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, []string{"exit42"})
-		if err == nil {
-			t.Fatalf("expected error from failing tool, got nil")
-		}
-
-		var exitError *ExitError
-		if !errors.As(err, &exitError) {
-			t.Fatalf("expected *ExitError, got %T: %v", err, err)
-		}
-		if exitError.ExitCode() != 42 {
-			t.Errorf("expected exit code 42, got %d", exitError.ExitCode())
-		}
-	})
-
 	t.Run("runGo", func(t *testing.T) {
 		config := &GoConfig{Run: "example.com/tool"}
 		var stdout, stderr bytes.Buffer
@@ -1233,7 +1037,7 @@ func TestBackendExitError(t *testing.T) {
 			t.Fatalf("expected error from failing tool, got nil")
 		}
 
-		var exitError *ExitError
+		var exitError *sandbox.ExitError
 		if !errors.As(err, &exitError) {
 			t.Fatalf("expected *ExitError, got %T: %v", err, err)
 		}
@@ -1302,125 +1106,38 @@ func TestCacheDirPerBackend(t *testing.T) {
 	getAppleContainerImageSHAFn = func(string) (string, error) { return "applesha123", nil }
 	getProotImageSHAFn = func(string) (string, error) { return "prootsha123", nil }
 
-	mounts := []Mount{{HostPath: "${cacheDir}/data", SandboxPath: "/data"}}
-	for _, testCase := range []struct {
-		backend, sha string
+	for _, syntax := range []struct {
+		name, hostPath string
 	}{
-		{"docker", "dockersha123"},
-		{"apple-container", "applesha123"},
-		{"proot", "prootsha123"},
+		{"deprecated {cacheDir}", "{cacheDir}/python"},
+		{"standard ${cacheDir}", "${cacheDir}/python"},
 	} {
-		t.Run(testCase.backend, func(t *testing.T) {
-			if testCase.backend == "proot" {
-				getImageSHAFn = func(string) (string, error) {
-					t.Fatal("proot must not depend on docker for image digest")
-					return "", nil
+		for _, testCase := range []struct {
+			backend, sha string
+		}{
+			{"docker", "dockersha123"},
+			{"apple-container", "applesha123"},
+			{"proot", "prootsha123"},
+		} {
+			t.Run(testCase.backend+"_"+syntax.name, func(t *testing.T) {
+				localGetImageSHA := getImageSHAFn
+				defer func() { getImageSHAFn = localGetImageSHA }()
+				if testCase.backend == "proot" {
+					getImageSHAFn = func(string) (string, error) {
+						t.Fatal("proot must not depend on docker for image digest")
+						return "", nil
+					}
 				}
-			}
-			resolved, err := resolveScriptMounts(mounts, testCase.backend, "test-image:v1", "key123456")
-			if err != nil {
-				t.Fatalf("resolveScriptMounts failed: %v", err)
-			}
-			expectedPath := filepath.Join(userCache, "clix", "cache", testCase.sha, "key123456", "data")
-			if resolved[0].HostPath != expectedPath {
-				t.Errorf("expected %q, got %q", expectedPath, resolved[0].HostPath)
-			}
-		})
+				mounts := []sandbox.Mount{{HostPath: syntax.hostPath, SandboxPath: "/tmp/.clix-pycache"}}
+				resolved, err := resolveScriptMounts(mounts, testCase.backend, "test-image:v1", "key123456")
+				if err != nil {
+					t.Fatalf("resolveScriptMounts failed: %v", err)
+				}
+				expectedPath := filepath.Join(userCache, "clix", "cache", testCase.sha, "key123456", "python")
+				if resolved[0].HostPath != expectedPath {
+					t.Errorf("expected %q, got %q", expectedPath, resolved[0].HostPath)
+				}
+			})
+		}
 	}
-}
-
-func TestBackendArgumentsIdentical(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd failed: %v", err)
-	}
-
-	script := Script{
-		Image:      "my-image:v1",
-		Entrypoint: "/bin/mytool",
-		Mounts: []Mount{
-			{HostPath: "/host/ro", SandboxPath: "/sandbox/ro", ReadOnly: true, WritableFallback: true},
-			{HostPath: "/host/rw", SandboxPath: "/sandbox/rw", ReadOnly: false},
-		},
-		Env: []EnvVar{
-			{Name: "VAR_A", Value: "VAL_A"},
-		},
-	}
-	args := []string{"run", "--flag"}
-
-	t.Run("Docker", func(t *testing.T) {
-		cmdArgs, err := buildDockerArgs(script, args, false)
-		if err != nil {
-			t.Fatalf("buildDockerArgs failed: %v", err)
-		}
-		expected := []string{
-			"run", "--rm", "-i",
-			"-v", "/host/ro:/sandbox/ro:ro",
-			"-v", "/host/rw:/sandbox/rw",
-			"-e", "VAR_A=VAL_A",
-			"-w", cwd,
-			"--entrypoint", "/bin/mytool",
-			"my-image:v1",
-			"run", "--flag",
-		}
-		if !slices.Equal(cmdArgs, expected) {
-			t.Errorf("got %v, want %v", cmdArgs, expected)
-		}
-	})
-
-	t.Run("AppleContainer", func(t *testing.T) {
-		cmdArgs, err := buildAppleContainerArgs(script, args, false)
-		if err != nil {
-			t.Fatalf("buildAppleContainerArgs failed: %v", err)
-		}
-		expected := []string{
-			"run", "--rm",
-			"--mount", "type=bind,source=/host/ro,target=/sandbox/ro,readonly",
-			"--mount", "type=bind,source=/host/rw,target=/sandbox/rw",
-			"-e", "VAR_A=VAL_A",
-			"-w", cwd,
-			"--entrypoint", "/bin/mytool",
-			"my-image:v1",
-			"run", "--flag",
-		}
-		if !slices.Equal(cmdArgs, expected) {
-			t.Errorf("got %v, want %v", cmdArgs, expected)
-		}
-	})
-
-	t.Run("Proot", func(t *testing.T) {
-		oldPrepareRootFS := prepareRootFSFn
-		defer func() { prepareRootFSFn = oldPrepareRootFS }()
-		prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
-			return &preparedRootFS{
-				dir:     "/mock/rootfs",
-				cleanup: func() {},
-			}, nil
-		}
-
-		var capturedArgs []string
-		oldExecCommand := execCommand
-		defer func() { execCommand = oldExecCommand }()
-		execCommand = func(name string, args ...string) *exec.Cmd {
-			capturedArgs = args
-			return fakeExecCommand(name, args...)
-		}
-
-		sandbox := &ProotSandbox{}
-		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, args)
-		if err != nil {
-			t.Fatalf("sandbox.Run failed: %v", err)
-		}
-		expected := []string{
-			"-r", "/mock/rootfs",
-			"-b", "/host/ro:/sandbox/ro",
-			"-b", "/host/rw:/sandbox/rw",
-			"/bin/mytool",
-			"run", "--flag",
-		}
-		if !slices.Equal(capturedArgs, expected) {
-			t.Errorf("got %v, want %v", capturedArgs, expected)
-		}
-	})
 }

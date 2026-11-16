@@ -26,22 +26,6 @@ import (
 	"testing"
 )
 
-func TestChrootUnsupported(t *testing.T) {
-	sandbox := &ChrootSandbox{}
-	script := Script{
-		Image: "test-image",
-	}
-
-	err := sandbox.Run(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hello"})
-	if err == nil {
-		t.Fatalf("expected error for chroot sandbox on unsupported platform, got nil")
-	}
-	expected := fmt.Sprintf("chroot sandbox is not supported on %s", runtime.GOOS)
-	if !strings.Contains(err.Error(), expected) {
-		t.Errorf("expected error %q, got %q", expected, err.Error())
-	}
-}
-
 func TestRunChrootUnsupported(t *testing.T) {
 	os.Setenv("CLIX_SANDBOX", "chroot")
 	defer os.Unsetenv("CLIX_SANDBOX")

@@ -12,14 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"archive/tar"
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -198,86 +200,98 @@ func TestUntar(t *testing.T) {
 	}
 }
 
-func TestFindGitRoot(t *testing.T) {
-	t.Run("nested working directory", func(t *testing.T) {
-		repoDir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(repoDir, ".git"), 0755); err != nil {
-			t.Fatalf("failed to create .git: %v", err)
-		}
-		nestedDir := filepath.Join(repoDir, "a", "b", "c")
-		if err := os.MkdirAll(nestedDir, 0755); err != nil {
-			t.Fatalf("failed to create nested dirs: %v", err)
-		}
+func TestBackendArgumentsIdentical(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd failed: %v", err)
+	}
 
-		got, err := findGitRoot(nestedDir)
+	script := Config{
+		Image:      "my-image:v1",
+		Entrypoint: "/bin/mytool",
+		Mounts: []Mount{
+			{HostPath: "/host/ro", SandboxPath: "/sandbox/ro", ReadOnly: true, WritableFallback: true},
+			{HostPath: "/host/rw", SandboxPath: "/sandbox/rw", ReadOnly: false},
+		},
+		Env: []EnvVar{
+			{Name: "VAR_A", Value: "VAL_A"},
+		},
+	}
+	args := []string{"run", "--flag"}
+
+	t.Run("Docker", func(t *testing.T) {
+		cmdArgs, err := buildDockerArgs(script, args, false)
 		if err != nil {
-			t.Fatalf("findGitRoot failed: %v", err)
+			t.Fatalf("buildDockerArgs failed: %v", err)
 		}
-		if got != repoDir {
-			t.Errorf("findGitRoot(%q) = %q, want %q", nestedDir, got, repoDir)
+		expected := []string{
+			"run", "--rm", "-i",
+			"-v", "/host/ro:/sandbox/ro:ro",
+			"-v", "/host/rw:/sandbox/rw",
+			"-e", "VAR_A=VAL_A",
+			"-w", cwd,
+			"--entrypoint", "/bin/mytool",
+			"my-image:v1",
+			"run", "--flag",
+		}
+		if !slices.Equal(cmdArgs, expected) {
+			t.Errorf("got %v, want %v", cmdArgs, expected)
 		}
 	})
 
-	t.Run(".git as a file", func(t *testing.T) {
-		repoDir := t.TempDir()
-		gitFile := filepath.Join(repoDir, ".git")
-		if err := os.WriteFile(gitFile, []byte("gitdir: /path/to/gitdir\n"), 0644); err != nil {
-			t.Fatalf("failed to create .git file: %v", err)
-		}
-		nestedDir := filepath.Join(repoDir, "sub")
-		if err := os.MkdirAll(nestedDir, 0755); err != nil {
-			t.Fatalf("failed to create nested dir: %v", err)
-		}
-
-		got, err := findGitRoot(nestedDir)
+	t.Run("AppleContainer", func(t *testing.T) {
+		cmdArgs, err := buildAppleContainerArgs(script, args, false)
 		if err != nil {
-			t.Fatalf("findGitRoot failed: %v", err)
+			t.Fatalf("buildAppleContainerArgs failed: %v", err)
 		}
-		if got != repoDir {
-			t.Errorf("findGitRoot(%q) = %q, want %q", nestedDir, got, repoDir)
+		expected := []string{
+			"run", "--rm",
+			"--mount", "type=bind,source=/host/ro,target=/sandbox/ro,readonly",
+			"--mount", "type=bind,source=/host/rw,target=/sandbox/rw",
+			"-e", "VAR_A=VAL_A",
+			"-w", cwd,
+			"--entrypoint", "/bin/mytool",
+			"my-image:v1",
+			"run", "--flag",
+		}
+		if !slices.Equal(cmdArgs, expected) {
+			t.Errorf("got %v, want %v", cmdArgs, expected)
 		}
 	})
 
-	t.Run("no repository", func(t *testing.T) {
-		emptyDir := t.TempDir()
-		got, err := findGitRoot(emptyDir)
-		if err == nil {
-			t.Fatalf("findGitRoot(%q) succeeded with %q, expected error", emptyDir, got)
-		}
-	})
-
-	t.Run("core.worktree in .git/config still resolves to directory containing .git", func(t *testing.T) {
-		repoDir := t.TempDir()
-		gitDir := filepath.Join(repoDir, ".git")
-		if err := os.Mkdir(gitDir, 0755); err != nil {
-			t.Fatalf("failed to create .git: %v", err)
-		}
-		otherDir := t.TempDir()
-		configContent := "[core]\n\tworktree = " + otherDir + "\n"
-		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(configContent), 0644); err != nil {
-			t.Fatalf("failed to write git config: %v", err)
+	t.Run("Proot", func(t *testing.T) {
+		oldPrepareRootFS := prepareRootFSFn
+		defer func() { prepareRootFSFn = oldPrepareRootFS }()
+		prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
+			return &preparedRootFS{
+				dir:     "/mock/rootfs",
+				cleanup: func() {},
+			}, nil
 		}
 
-		got, err := findGitRoot(repoDir)
+		var capturedArgs []string
+		oldExecCommand := execCommand
+		defer func() { execCommand = oldExecCommand }()
+		execCommand = func(name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return fakeExecCommand(name, args...)
+		}
+
+		sandbox := &ProotSandbox{}
+		var stdout, stderr bytes.Buffer
+		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, args)
 		if err != nil {
-			t.Fatalf("findGitRoot failed: %v", err)
+			t.Fatalf("sandbox.Run failed: %v", err)
 		}
-		if got != repoDir {
-			t.Errorf("findGitRoot(%q) = %q, want %q (should ignore core.worktree %q)", repoDir, got, repoDir, otherDir)
+		expected := []string{
+			"-r", "/mock/rootfs",
+			"-b", "/host/ro:/sandbox/ro",
+			"-b", "/host/rw:/sandbox/rw",
+			"/bin/mytool",
+			"run", "--flag",
 		}
-	})
-
-	t.Run("lstat error other than not exist is returned", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "somefile")
-		if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-		_, err := findGitRoot(filepath.Join(f, "child"))
-		if err == nil {
-			t.Fatalf("expected error, got nil")
-		}
-		if !strings.Contains(err.Error(), "somefile") {
-			t.Errorf("expected error to mention somefile, got %v", err)
+		if !slices.Equal(capturedArgs, expected) {
+			t.Errorf("got %v, want %v", capturedArgs, expected)
 		}
 	})
 }

@@ -16,11 +16,30 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/gke-labs/clix/sandbox"
 )
+
+type fakeHelperSandbox struct{}
+
+func (s *fakeHelperSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
+	cmd := execCommand("docker", args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return sandbox.NewExitError(exitError.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
 
 // fakeExecCommand mocks exec.Command for testing.
 func fakeExecCommand(command string, args ...string) *exec.Cmd {
@@ -115,6 +134,7 @@ func TestHelperMainProcess(t *testing.T) {
 		return
 	}
 	execCommand = fakeExecCommand
+	newSandbox = func(string) (sandbox.Sandbox, string) { return &fakeHelperSandbox{}, "docker" }
 	testBinary := os.Args[0]
 	var subArgs []string
 	for i, arg := range os.Args {
