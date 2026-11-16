@@ -211,8 +211,8 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	if script.Image != "" {
 		runArgs = scriptArgs
 	} else if script.Go != nil {
-		if len(script.Mounts) > 0 {
-			log(1, "Script has mounts, transforming into Docker script")
+		if len(script.Mounts) > 0 || script.Network != "" {
+			log(1, "Script has mounts or network configuration, transforming into Docker script")
 			// Transform into a Docker script
 			script.Image = "golang:latest"
 

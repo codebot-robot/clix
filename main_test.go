@@ -1210,3 +1210,34 @@ image: alpine
 		t.Errorf("got error %q, want it to contain %q", err.Error(), expectedErrorMessage)
 	}
 }
+
+func TestRunNetworkNone(t *testing.T) {
+	fake := &recordingSandbox{}
+	oldNewSandbox := newSandbox
+	defer func() { newSandbox = oldNewSandbox }()
+	newSandbox = func(sandboxType string) (sandbox.Sandbox, string, error) {
+		return fake, "docker", nil
+	}
+
+	temporaryDirectory := t.TempDir()
+	scriptPath := filepath.Join(temporaryDirectory, "script.yaml")
+	scriptContent := `#!/usr/bin/env clix
+image: alpine
+network: none
+`
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(strings.NewReader(""), &stdout, &stderr, []string{"clix", scriptPath}); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if len(fake.configs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(fake.configs))
+	}
+	if fake.configs[0].Network != "none" {
+		t.Errorf("expected Network to be %q, got %q", "none", fake.configs[0].Network)
+	}
+}
