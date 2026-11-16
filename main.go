@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -26,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/gke-labs/clix/sandbox"
+	"github.com/go-logr/logr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -44,16 +46,91 @@ var newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
 	}
 }
 
-func log(level int, format string, v ...any) {
-	verbosity := 0
-	if vStr := os.Getenv("CLIX_LOG_VERBOSITY"); vStr != "" {
-		if _, err := fmt.Sscanf(vStr, "%d", &verbosity); err != nil {
-			fmt.Fprintf(os.Stderr, "clix: failed to parse CLIX_LOG_VERBOSITY %q: %v\n", vStr, err)
+type clixLogSink struct {
+	writer    io.Writer
+	verbosity int
+	values    []any
+}
+
+func (s *clixLogSink) Init(info logr.RuntimeInfo)        {}
+func (s *clixLogSink) Enabled(level int) bool            { return level <= s.verbosity }
+func (s *clixLogSink) WithName(name string) logr.LogSink { return s }
+
+func (s *clixLogSink) WithValues(keysAndValues ...any) logr.LogSink {
+	newValues := make([]any, len(s.values)+len(keysAndValues))
+	copy(newValues, s.values)
+	copy(newValues[len(s.values):], keysAndValues)
+	return &clixLogSink{
+		writer:    s.writer,
+		verbosity: s.verbosity,
+		values:    newValues,
+	}
+}
+
+func renderSlice(builder *strings.Builder, slice []any) {
+	for index := 0; index < len(slice); index += 2 {
+		builder.WriteString(" ")
+		if index+1 < len(slice) {
+			builder.WriteString(fmt.Sprintf("%v=%v", slice[index], slice[index+1]))
+		} else {
+			builder.WriteString(fmt.Sprintf("%v=(MISSING)", slice[index]))
 		}
 	}
-	if verbosity >= level {
-		fmt.Fprintf(os.Stderr, "clix: "+format+"\n", v...)
+}
+
+func (s *clixLogSink) renderPairs(keysAndValues []any) string {
+	if len(s.values) == 0 && len(keysAndValues) == 0 {
+		return ""
 	}
+	var builder strings.Builder
+	renderSlice(&builder, s.values)
+	renderSlice(&builder, keysAndValues)
+	return builder.String()
+}
+
+func (s *clixLogSink) print(text string) {
+	if s.writer != nil {
+		if _, err := fmt.Fprint(s.writer, text); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write log: %v\n", err)
+		}
+		return
+	}
+	fmt.Fprint(os.Stderr, text)
+}
+
+func (s *clixLogSink) Info(level int, message string, keysAndValues ...any) {
+	if s.Enabled(level) {
+		s.print(fmt.Sprintf("clix: %s%s\n", message, s.renderPairs(keysAndValues)))
+	}
+}
+
+func (s *clixLogSink) Error(err error, message string, keysAndValues ...any) {
+	pairs := s.renderPairs(keysAndValues)
+	if err != nil {
+		s.print(fmt.Sprintf("clix: %s: %v%s\n", message, err, pairs))
+	} else {
+		s.print(fmt.Sprintf("clix: %s%s\n", message, pairs))
+	}
+}
+
+func newLogger() logr.Logger {
+	return newLoggerWithWriter(os.Stderr)
+}
+
+func newLoggerWithWriter(writer io.Writer) logr.Logger {
+	verbosity := 0
+	if verbosityString := os.Getenv("CLIX_LOG_VERBOSITY"); verbosityString != "" {
+		if _, err := fmt.Sscanf(verbosityString, "%d", &verbosity); err != nil {
+			fmt.Fprintf(os.Stderr, "clix: failed to parse CLIX_LOG_VERBOSITY %q: %v\n", verbosityString, err)
+		}
+	}
+	return logr.New(&clixLogSink{writer: writer, verbosity: verbosity})
+}
+
+var defaultLogger = newLogger()
+
+func log(level int, format string, v ...any) {
+	defaultLogger.V(level).Info(fmt.Sprintf(format, v...))
 }
 
 type Script struct {
@@ -94,6 +171,9 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: %s <script> [args...]", args[0])
 	}
+
+	defaultLogger = newLogger()
+	ctx := logr.NewContext(context.Background(), defaultLogger)
 
 	scriptPath := args[1]
 	scriptArgs := args[2:]
@@ -170,7 +250,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	script.Mounts = resolvedMounts
 
 	log(1, "Running image: %s", script.Image)
-	return backend.Run(stdin, stdout, stderr, script.Config, runArgs)
+	return backend.Run(ctx, stdin, stdout, stderr, script.Config, runArgs)
 }
 
 func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []string) error {

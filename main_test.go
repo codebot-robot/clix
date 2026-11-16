@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/gke-labs/clix/sandbox"
+	"github.com/go-logr/logr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -747,7 +749,7 @@ type recordingSandbox struct {
 	configs []sandbox.Config
 }
 
-func (s *recordingSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
+func (s *recordingSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
 	s.configs = append(s.configs, script)
 	return nil
 }
@@ -1140,4 +1142,49 @@ func TestCacheDirPerBackend(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestClixLogSink(t *testing.T) {
+	t.Run("InfoWithKeyValuePairs", func(t *testing.T) {
+		var output bytes.Buffer
+		sink := &clixLogSink{writer: &output, verbosity: 1}
+		logr.New(sink).Info("preparing sandbox", "directory", "/tmp/sandbox-1")
+		expectedOutput := "clix: preparing sandbox directory=/tmp/sandbox-1\n"
+		if actualOutput := output.String(); actualOutput != expectedOutput {
+			t.Errorf("got %q, want %q", actualOutput, expectedOutput)
+		}
+	})
+
+	t.Run("ErrorWithKeyValuePairs", func(t *testing.T) {
+		var output bytes.Buffer
+		sink := &clixLogSink{writer: &output, verbosity: 1}
+		logr.New(sink).Error(errors.New("permission denied"), "failed to clean up", "directory", "/tmp/sandbox-2")
+		expectedOutput := "clix: failed to clean up: permission denied directory=/tmp/sandbox-2\n"
+		if actualOutput := output.String(); actualOutput != expectedOutput {
+			t.Errorf("got %q, want %q", actualOutput, expectedOutput)
+		}
+	})
+
+	t.Run("WithValuesAccumulatesPairs", func(t *testing.T) {
+		var output bytes.Buffer
+		sink := &clixLogSink{writer: &output, verbosity: 1}
+		logr.New(sink).WithValues("component", "sandbox").Info("running tool", "tool", "echo")
+		expectedOutput := "clix: running tool component=sandbox tool=echo\n"
+		if actualOutput := output.String(); actualOutput != expectedOutput {
+			t.Errorf("got %q, want %q", actualOutput, expectedOutput)
+		}
+	})
+
+	t.Run("LogFunctionRoutesThroughLogger", func(t *testing.T) {
+		var output bytes.Buffer
+		oldLogger := defaultLogger
+		defer func() { defaultLogger = oldLogger }()
+		defaultLogger = logr.New(&clixLogSink{writer: &output, verbosity: 1})
+
+		log(1, "using sandbox: %s", "docker")
+		expectedOutput := "clix: using sandbox: docker\n"
+		if actualOutput := output.String(); actualOutput != expectedOutput {
+			t.Errorf("got %q, want %q", actualOutput, expectedOutput)
+		}
+	})
 }

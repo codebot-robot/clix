@@ -15,6 +15,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -22,7 +23,7 @@ import (
 
 type ProotSandbox struct{}
 
-func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *ProotSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	for _, m := range script.Mounts {
 		if m.ReadOnly && !m.WritableFallback {
 			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
@@ -34,7 +35,7 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Con
 		return fmt.Errorf("ProotSandbox requires an image path (used as root directory)")
 	}
 
-	rootFS, err := prepareRootFSFn(rootPath)
+	rootFS, err := prepareRootFSFn(ctx, rootPath)
 	if err != nil {
 		return err
 	}

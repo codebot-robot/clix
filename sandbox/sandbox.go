@@ -16,6 +16,7 @@ package sandbox
 
 import (
 	"archive/tar"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,28 +25,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/go-logr/logr"
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 var execCommand = exec.Command
 
-func log(level int, format string, v ...any) {
-	verbosity := 0
-	if vStr := os.Getenv("CLIX_LOG_VERBOSITY"); vStr != "" {
-		if _, err := fmt.Sscanf(vStr, "%d", &verbosity); err != nil {
-			fmt.Fprintf(os.Stderr, "clix: failed to parse CLIX_LOG_VERBOSITY %q: %v\n", vStr, err)
-		}
-	}
-	if verbosity >= level {
-		fmt.Fprintf(os.Stderr, "clix: "+format+"\n", v...)
-	}
-}
-
 // Sandbox is the interface implemented by all our sandboxing technologies (docker, chroot etc)
 type Sandbox interface {
 	// Run executes the container image defined by script
-	Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error
+	Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error
 }
 
 type Config struct {
@@ -105,7 +95,7 @@ func imageEnv(img v1.Image) ([]string, error) {
 	return cf.Config.Env, nil
 }
 
-func prepareRootFS(imageRef string) (*preparedRootFS, error) {
+func prepareRootFS(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 	// Assume it is a container image
 	img, err := crane.Pull(imageRef)
 	if err != nil {
@@ -123,7 +113,8 @@ func prepareRootFS(imageRef string) (*preparedRootFS, error) {
 	}
 	cleanup := func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to remove temp dir %s: %v\n", tmpDir, err)
+			logger := logr.FromContextOrDiscard(ctx)
+			logger.Error(err, "failed to remove temp dir", "directory", tmpDir)
 		}
 	}
 

@@ -16,6 +16,7 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -134,7 +135,7 @@ func TestBackendExitError(t *testing.T) {
 		sandbox := &DockerSandbox{}
 		script := Config{Image: "alpine"}
 		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, []string{"exit42"})
+		err := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, []string{"exit42"})
 		if err == nil {
 			t.Fatalf("expected error from failing tool, got nil")
 		}

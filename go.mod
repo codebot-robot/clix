@@ -3,6 +3,7 @@ module github.com/gke-labs/clix
 go 1.27.4
 
 require (
+	github.com/go-logr/logr v1.4.4
 	github.com/google/go-containerregistry v0.20.7
 	golang.org/x/term v0.39.0
 	sigs.k8s.io/yaml v1.6.0

@@ -18,6 +18,7 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -30,7 +31,7 @@ func TestChrootUnsupported(t *testing.T) {
 		Image: "test-image",
 	}
 
-	err := sandbox.Run(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hello"})
+	err := sandbox.Run(context.Background(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hello"})
 	if err == nil {
 		t.Fatalf("expected error for chroot sandbox on unsupported platform, got nil")
 	}
