@@ -15,6 +15,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -24,13 +25,13 @@ import (
 
 type ChrootSandbox struct{}
 
-func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *ChrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	rootPath := script.Image
 	if rootPath == "" {
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
 	}
 
-	rootFS, err := prepareRootFSFn(rootPath)
+	rootFS, err := prepareRootFSFn(ctx, rootPath)
 	if err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +24,7 @@ import (
 
 type AppleContainerSandbox struct{}
 
-func (s *AppleContainerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *AppleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	cmdArgs, err := buildAppleContainerArgs(script, args, isTerminal(stdin))
 	if err != nil {
 		return fmt.Errorf("error building apple/container args: %w", err)

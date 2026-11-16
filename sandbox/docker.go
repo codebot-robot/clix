@@ -15,24 +15,27 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/term"
 )
 
 type DockerSandbox struct{}
 
-func (s *DockerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
-	log(2, "DockerSandbox: preparing args")
+func (s *DockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+	logger := logr.FromContextOrDiscard(ctx)
+	logger.V(2).Info("DockerSandbox: preparing args")
 	cmdArgs, err := buildDockerArgs(script, args, isTerminal(stdin))
 	if err != nil {
 		return fmt.Errorf("error building docker args: %w", err)
 	}
 
-	log(1, "DockerSandbox: running docker %v", cmdArgs)
+	logger.V(1).Info(fmt.Sprintf("DockerSandbox: running docker %v", cmdArgs))
 	cmd := execCommand("docker", cmdArgs...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout

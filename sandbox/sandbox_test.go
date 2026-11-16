@@ -17,6 +17,7 @@ package sandbox
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -24,6 +25,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-logr/logr"
 )
 
 type tarEntry struct {
@@ -262,7 +265,7 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 	t.Run("Proot", func(t *testing.T) {
 		oldPrepareRootFS := prepareRootFSFn
 		defer func() { prepareRootFSFn = oldPrepareRootFS }()
-		prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
+		prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 			return &preparedRootFS{
 				dir:     "/mock/rootfs",
 				cleanup: func() {},
@@ -279,7 +282,7 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 
 		sandbox := &ProotSandbox{}
 		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, args)
+		err := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, args)
 		if err != nil {
 			t.Fatalf("sandbox.Run failed: %v", err)
 		}
@@ -294,4 +297,97 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 			t.Errorf("got %v, want %v", capturedArgs, expected)
 		}
 	})
+}
+
+type recordingLogSink struct {
+	messages []string
+}
+
+func (s *recordingLogSink) Init(info logr.RuntimeInfo)                   {}
+func (s *recordingLogSink) Enabled(level int) bool                       { return true }
+func (s *recordingLogSink) WithValues(keysAndValues ...any) logr.LogSink { return s }
+func (s *recordingLogSink) WithName(name string) logr.LogSink            { return s }
+
+func (s *recordingLogSink) Info(level int, message string, keysAndValues ...any) {
+	s.messages = append(s.messages, message)
+}
+
+func (s *recordingLogSink) Error(err error, message string, keysAndValues ...any) {
+	s.messages = append(s.messages, message)
+}
+
+func TestLibraryCallerLoggerReceivesMessages(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+
+	sink := &recordingLogSink{}
+	logger := logr.New(sink)
+	ctx := logr.NewContext(context.Background(), logger)
+
+	sandbox := &DockerSandbox{}
+	script := Config{Image: "alpine"}
+	var stdout, stderr bytes.Buffer
+	err := sandbox.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+	if err != nil {
+		t.Fatalf("sandbox.Run failed: %v", err)
+	}
+
+	expectedPrefixes := []string{
+		"DockerSandbox: preparing args",
+		"DockerSandbox: running docker",
+	}
+	for _, prefix := range expectedPrefixes {
+		found := false
+		for _, message := range sink.messages {
+			if strings.HasPrefix(message, prefix) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected message starting with %q in recorded messages: %v", prefix, sink.messages)
+		}
+	}
+}
+
+func TestNoLoggerNoOutputToStderr(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+
+	t.Setenv("CLIX_LOG_VERBOSITY", "2")
+
+	oldStderr := os.Stderr
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	os.Stderr = pipeWriter
+
+	sandbox := &DockerSandbox{}
+	script := Config{Image: "alpine"}
+	var stdout, stderr bytes.Buffer
+	runErr := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+
+	if err := pipeWriter.Close(); err != nil {
+		t.Errorf("failed to close pipe writer: %v", err)
+	}
+	os.Stderr = oldStderr
+
+	var capturedStderr bytes.Buffer
+	if _, err := io.Copy(&capturedStderr, pipeReader); err != nil {
+		t.Fatalf("failed to read from pipe: %v", err)
+	}
+	if err := pipeReader.Close(); err != nil {
+		t.Errorf("failed to close pipe reader: %v", err)
+	}
+
+	if runErr != nil {
+		t.Fatalf("sandbox.Run failed: %v", runErr)
+	}
+
+	if capturedStderr.Len() > 0 {
+		t.Errorf("expected nothing written to process stderr, got %q", capturedStderr.String())
+	}
 }

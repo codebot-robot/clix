@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -27,7 +28,7 @@ import (
 
 type fakeHelperSandbox struct{}
 
-func (s *fakeHelperSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
+func (s *fakeHelperSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
 	cmd := execCommand("docker", args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
