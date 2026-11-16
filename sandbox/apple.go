@@ -25,6 +25,10 @@ import (
 type appleContainerSandbox struct{}
 
 func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+	if script.Network != "" {
+		return fmt.Errorf("network isolation is not supported by the apple-container sandbox")
+	}
+
 	cmdArgs, err := buildAppleContainerArgs(script, args, isTerminal(stdin))
 	if err != nil {
 		return fmt.Errorf("error building apple/container args: %w", err)

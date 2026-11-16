@@ -51,6 +51,10 @@ type Config struct {
 	Mounts []Mount `json:"mounts,omitempty"`
 	// Env lists environment variables explicitly passed into the sandbox.
 	Env []EnvVar `json:"env,omitempty"`
+	// Network specifies network isolation for the sandbox.
+	// An empty string keeps default network access.
+	// "none" disables network access.
+	Network string `json:"network,omitempty"`
 }
 
 // EnvVar describes an environment variable passed into the sandbox.

@@ -26,6 +26,10 @@ import (
 type chrootSandbox struct{}
 
 func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+	if script.Network != "" {
+		return fmt.Errorf("network isolation is not supported by the chroot sandbox")
+	}
+
 	rootPath := script.Image
 	if rootPath == "" {
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")

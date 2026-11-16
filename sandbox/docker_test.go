@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -120,6 +121,49 @@ func TestBuildDockerArgs(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("Expected args %v in cmdArgs %v", tt.expectedArgs, cmdArgs)
+			}
+		})
+	}
+
+	// 3. Network table cases
+	networkTests := []struct {
+		name        string
+		network     string
+		expectArgs  []string
+		expectError bool
+	}{
+		{name: "Default network", network: ""},
+		{name: "None network", network: "none", expectArgs: []string{"--network", "none"}},
+		{name: "Unsupported network", network: "custom", expectError: true},
+	}
+
+	for _, tt := range networkTests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Config{
+				Image:   "alpine",
+				Network: tt.network,
+			}
+			cmdArgs, err := buildDockerArgs(s, args, false)
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error for network %q, got nil", tt.network)
+				}
+				expectedMessage := `network mode "custom" is not supported by the docker sandbox`
+				if !strings.Contains(err.Error(), expectedMessage) {
+					t.Errorf("got error %q, want %q", err.Error(), expectedMessage)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildDockerArgs failed: %v", err)
+			}
+			for _, arg := range tt.expectArgs {
+				if !slices.Contains(cmdArgs, arg) {
+					t.Errorf("expected arg %q in %v", arg, cmdArgs)
+				}
+			}
+			if len(tt.expectArgs) == 0 && slices.Contains(cmdArgs, "--network") {
+				t.Errorf("unexpected --network in %v", cmdArgs)
 			}
 		})
 	}

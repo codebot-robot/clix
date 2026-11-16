@@ -24,6 +24,10 @@ import (
 type prootSandbox struct{}
 
 func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+	if script.Network != "" {
+		return fmt.Errorf("network isolation is not supported by the proot sandbox")
+	}
+
 	for _, m := range script.Mounts {
 		if m.ReadOnly && !m.WritableFallback {
 			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")

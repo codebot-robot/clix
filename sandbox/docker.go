@@ -56,6 +56,12 @@ func buildDockerArgs(script Config, args []string, isTerm bool) ([]string, error
 		cmdArgs = append(cmdArgs, "-t")
 	}
 
+	if script.Network == "none" {
+		cmdArgs = append(cmdArgs, "--network", "none")
+	} else if script.Network != "" {
+		return nil, fmt.Errorf("network mode %q is not supported by the docker sandbox", script.Network)
+	}
+
 	for _, m := range script.Mounts {
 		v := fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath)
 		if m.ReadOnly {

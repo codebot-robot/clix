@@ -12,6 +12,7 @@ This document describes the design for running tools in a sandbox environment (D
 
 *   **Environment.** A sandboxed tool receives only the variables listed in the script's `env:` block, plus whatever the container image itself defines, plus a minimal base that a backend must supply for the tool to run at all (`PATH`, `HOME`, and `TERM` when attached to a terminal). The host environment is never inherited or passed through, on any backend. There is no syntax for "pass this host variable through"; a value in `env:` is a literal.
 *   **Filesystem.** A sandboxed tool sees the image's filesystem plus only the host directories listed in `mounts:`.
+*   **Network.** By default, a sandboxed tool keeps the network access of the host environment. A run can declare `network: none` to request that no network access be available. A backend that cannot honour this must fail with an error naming the backend and the reason. Today, only the `docker` backend can enforce `network: none`; `apple-container`, `chroot`, and `proot` reject runs that request it.
 *   **Backends.** The contract is the same for every backend selected by `CLIX_SANDBOX` (`docker`, the default; `apple-container`; `chroot`; `proot`). A backend that cannot honour part of the contract must fail with an error rather than run with less isolation.
 *   **Not sandboxed today.** A script with `go:` and no `mounts:` is run with `go run` directly on the host (`runGo` in `main.go`), with the host environment and filesystem. This is the current behaviour of the prototype.
 
@@ -27,6 +28,7 @@ mounts:
 env:
   - name: <string>
     value: <string>
+network: <string> # Optional, "none" for no network access
 ```
 
 Example:
@@ -132,7 +134,7 @@ func main() {
 
 ### Platform Limits
 
-*   **`docker`**: Requires a running Docker daemon. Supported on Linux, macOS, and other platforms where Docker is available.
-*   **`apple-container`**: Requires macOS with the `container` CLI installed.
-*   **`chroot`**: Supported only on Linux; fails on other platforms. Requires root privileges or unprivileged user namespace support. Does not support mounts.
-*   **`proot`**: Requires `proot` installed in `$PATH`. Supported on Linux. Does not support read-only mounts unless fallback is allowed.
+*   **`docker`**: Requires a running Docker daemon. Supported on Linux, macOS, and other platforms where Docker is available. Supports `network: none`.
+*   **`apple-container`**: Requires macOS with the `container` CLI installed. Does not support network isolation (`network: none`).
+*   **`chroot`**: Supported only on Linux; fails on other platforms. Requires root privileges or unprivileged user namespace support. Does not support mounts or network isolation (`network: none`).
+*   **`proot`**: Requires `proot` installed in `$PATH`. Supported on Linux. Does not support read-only mounts unless fallback is allowed, and does not support network isolation (`network: none`).

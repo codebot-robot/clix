@@ -15,6 +15,7 @@
 package e2e
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,4 +54,40 @@ func TestE2E(t *testing.T) {
 	} else {
 		t.Logf("shfmt --version succeeded: %s", out)
 	}
+
+	t.Run("NetworkNone", func(t *testing.T) {
+		isolatedScript := filepath.Join(tempDir, "isolated-script")
+		isolatedContent := "#!/usr/bin/env clix\nimage: alpine:latest\nnetwork: none\n"
+		if err := os.WriteFile(isolatedScript, []byte(isolatedContent), 0755); err != nil {
+			t.Fatalf("failed to write script: %v", err)
+		}
+		var isolatedStderr bytes.Buffer
+		cmd := exec.Command(isolatedScript, "ls", "/sys/class/net")
+		cmd.Env = append(os.Environ(), "PATH="+tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		cmd.Stderr = &isolatedStderr
+		isolatedStdout, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("isolated run failed: %v\nStderr: %s", err, isolatedStderr.String())
+		}
+		if interfaces := strings.TrimSpace(string(isolatedStdout)); interfaces != "lo" {
+			t.Errorf("expected only loopback interface 'lo', got: %q", interfaces)
+		}
+
+		defaultScript := filepath.Join(tempDir, "default-script")
+		defaultContent := "#!/usr/bin/env clix\nimage: alpine:latest\n"
+		if err := os.WriteFile(defaultScript, []byte(defaultContent), 0755); err != nil {
+			t.Fatalf("failed to write script: %v", err)
+		}
+		var defaultStderr bytes.Buffer
+		defaultCmd := exec.Command(defaultScript, "ls", "/sys/class/net")
+		defaultCmd.Env = append(os.Environ(), "PATH="+tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		defaultCmd.Stderr = &defaultStderr
+		defaultStdout, err := defaultCmd.Output()
+		if err != nil {
+			t.Fatalf("default run failed: %v\nStderr: %s", err, defaultStderr.String())
+		}
+		if interfaces := strings.TrimSpace(string(defaultStdout)); interfaces == "lo" {
+			t.Errorf("expected default run to have network interfaces beyond 'lo', got: %q", interfaces)
+		}
+	})
 }
