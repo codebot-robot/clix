@@ -28,6 +28,10 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 		return fmt.Errorf("network isolation is not supported by the proot sandbox")
 	}
 
+	if err := validateMounts(script.Mounts, ":"); err != nil {
+		return err
+	}
+
 	for _, m := range script.Mounts {
 		if m.ReadOnly && !m.WritableFallback {
 			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")

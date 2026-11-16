@@ -174,36 +174,12 @@ func TestResolveMounts(t *testing.T) {
 			scriptKey: "key1",
 		},
 		{
-			name:        "Rule 1: host path not absolute rejected",
-			input:       []sandbox.Mount{{HostPath: "relative/path"}},
-			wantErr:     true,
-			errContains: "relative/path",
-		},
-		{
 			name:        "Rule 2: cache path escaping cache directory rejected",
 			input:       []sandbox.Mount{{HostPath: "${cacheDir}/../escape"}},
 			imageSHA:    "abc",
 			scriptKey:   "key1",
 			wantErr:     true,
 			errContains: "${cacheDir}/../escape",
-		},
-		{
-			name:        "Rule 3: sandbox path not absolute rejected",
-			input:       []sandbox.Mount{{HostPath: "/tmp", SandboxPath: "relative/sandbox"}},
-			wantErr:     true,
-			errContains: "relative/sandbox",
-		},
-		{
-			name:        "Rule 4: host path containing colon rejected",
-			input:       []sandbox.Mount{{HostPath: "/tmp/has:colon", SandboxPath: "/tmp"}},
-			wantErr:     true,
-			errContains: "/tmp/has:colon",
-		},
-		{
-			name:        "Rule 4: sandbox path containing colon rejected",
-			input:       []sandbox.Mount{{HostPath: "/tmp", SandboxPath: "/sandbox:colon"}},
-			wantErr:     true,
-			errContains: "/sandbox:colon",
 		},
 		{
 			name:      "Redundant .. inside cache directory accepted and cleaned",
@@ -1239,5 +1215,73 @@ network: none
 	}
 	if fake.configs[0].Network != "none" {
 		t.Errorf("expected Network to be %q, got %q", "none", fake.configs[0].Network)
+	}
+}
+
+func TestRunBadMounts(t *testing.T) {
+	tests := []struct {
+		name            string
+		script          string
+		expectedMessage string
+	}{
+		{
+			name: "relative host path",
+			script: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: relative/path
+  sandboxPath: /tmp
+`,
+			expectedMessage: `mount "relative/path": host path is not absolute`,
+		},
+		{
+			name: "relative sandbox path",
+			script: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: /tmp
+  sandboxPath: relative/sandbox
+`,
+			expectedMessage: `mount "/tmp": sandbox path "relative/sandbox" is not absolute`,
+		},
+		{
+			name: "colon in host path",
+			script: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: /tmp/has:colon
+  sandboxPath: /tmp
+`,
+			expectedMessage: `mount "/tmp/has:colon": host path contains ':'`,
+		},
+		{
+			name: "colon in sandbox path",
+			script: `#!/usr/bin/env clix
+image: alpine
+mounts:
+- hostPath: /tmp
+  sandboxPath: /sandbox:colon
+`,
+			expectedMessage: `mount "/tmp": sandbox path "/sandbox:colon" contains ':'`,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			temporaryDirectory := t.TempDir()
+			scriptPath := filepath.Join(temporaryDirectory, "script.yaml")
+			if err := os.WriteFile(scriptPath, []byte(testCase.script), 0755); err != nil {
+				t.Fatalf("failed to write script: %v", err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := run(strings.NewReader(""), &stdout, &stderr, []string{"clix", scriptPath})
+			if err == nil {
+				t.Fatalf("expected error running script with bad mount, got nil")
+			}
+			if !strings.Contains(err.Error(), testCase.expectedMessage) {
+				t.Errorf("expected error containing %q, got: %v", testCase.expectedMessage, err)
+			}
+		})
 	}
 }

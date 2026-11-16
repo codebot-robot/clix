@@ -32,7 +32,7 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	logger.V(2).Info("DockerSandbox: preparing args")
 	cmdArgs, err := buildDockerArgs(script, args, isTerminal(stdin))
 	if err != nil {
-		return fmt.Errorf("error building docker args: %w", err)
+		return err
 	}
 
 	logger.V(1).Info(fmt.Sprintf("DockerSandbox: running docker %v", cmdArgs))
@@ -51,6 +51,10 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 }
 
 func buildDockerArgs(script Config, args []string, isTerm bool) ([]string, error) {
+	if err := validateMounts(script.Mounts, ":"); err != nil {
+		return nil, err
+	}
+
 	cmdArgs := []string{"run", "--rm", "-i"}
 	if isTerm {
 		cmdArgs = append(cmdArgs, "-t")

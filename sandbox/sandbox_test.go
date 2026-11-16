@@ -18,6 +18,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -429,6 +430,119 @@ func TestUnsupportedBackendsRejectNetworkIsolation(t *testing.T) {
 			if !strings.Contains(err.Error(), testCase.expectedMessage) {
 				t.Errorf("got error %q, want %q", err.Error(), testCase.expectedMessage)
 			}
+		})
+	}
+}
+
+func TestMountValidation(t *testing.T) {
+	backends := []struct {
+		name             string
+		delimiter        string
+		allowedCharacter string
+	}{
+		{name: "docker", delimiter: ":", allowedCharacter: ","},
+		{name: "apple-container", delimiter: ",", allowedCharacter: ":"},
+		{name: "proot", delimiter: ":", allowedCharacter: ","},
+	}
+
+	for _, targetBackend := range backends {
+		t.Run(targetBackend.name, func(t *testing.T) {
+			backend, err := New(targetBackend.name)
+			if err != nil {
+				t.Fatalf("New(%q) failed: %v", targetBackend.name, err)
+			}
+
+			invalidCases := []struct {
+				name            string
+				mount           Mount
+				expectedMessage string
+			}{
+				{
+					name:            "empty host path",
+					mount:           Mount{HostPath: "", SandboxPath: "/sandbox"},
+					expectedMessage: `mount "/sandbox": host path is empty`,
+				},
+				{
+					name:            "relative host path",
+					mount:           Mount{HostPath: "relative/path", SandboxPath: "/sandbox"},
+					expectedMessage: `mount "relative/path": host path is not absolute`,
+				},
+				{
+					name:            "empty sandbox path",
+					mount:           Mount{HostPath: "/host", SandboxPath: ""},
+					expectedMessage: `mount "/host": sandbox path is empty`,
+				},
+				{
+					name:            "relative sandbox path",
+					mount:           Mount{HostPath: "/host", SandboxPath: "relative/sandbox"},
+					expectedMessage: `mount "/host": sandbox path "relative/sandbox" is not absolute`,
+				},
+				{
+					name:            "delimiter in host path",
+					mount:           Mount{HostPath: "/host" + targetBackend.delimiter + "path", SandboxPath: "/sandbox"},
+					expectedMessage: fmt.Sprintf(`mount "/host%spath": host path contains '%s'`, targetBackend.delimiter, targetBackend.delimiter),
+				},
+				{
+					name:            "delimiter in sandbox path",
+					mount:           Mount{HostPath: "/host", SandboxPath: "/sandbox" + targetBackend.delimiter + "path"},
+					expectedMessage: fmt.Sprintf(`mount "/host": sandbox path "/sandbox%spath" contains '%s'`, targetBackend.delimiter, targetBackend.delimiter),
+				},
+			}
+
+			for _, testCase := range invalidCases {
+				t.Run(testCase.name, func(t *testing.T) {
+					oldExecCommand := execCommand
+					defer func() { execCommand = oldExecCommand }()
+					execCommand = func(name string, args ...string) *exec.Cmd {
+						t.Fatalf("execCommand was called for invalid mount: %s %v", name, args)
+						return nil
+					}
+
+					oldPrepareRootFS := prepareRootFSFn
+					defer func() { prepareRootFSFn = oldPrepareRootFS }()
+					prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+						t.Fatalf("prepareRootFS was called for invalid mount")
+						return nil, nil
+					}
+
+					config := Config{
+						Image:  "alpine",
+						Mounts: []Mount{testCase.mount},
+					}
+					var stdout, stderr bytes.Buffer
+					err := backend.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+					if err == nil {
+						t.Fatalf("expected error for invalid mount %+v, got nil", testCase.mount)
+					}
+					if !strings.Contains(err.Error(), testCase.expectedMessage) {
+						t.Errorf("got error %q, want it to contain %q", err.Error(), testCase.expectedMessage)
+					}
+				})
+			}
+
+			t.Run("character allowed on other backends is accepted", func(t *testing.T) {
+				oldExecCommand := execCommand
+				defer func() { execCommand = oldExecCommand }()
+				execCommand = fakeExecCommand
+
+				oldPrepareRootFS := prepareRootFSFn
+				defer func() { prepareRootFSFn = oldPrepareRootFS }()
+				prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+					return &preparedRootFS{dir: "/mock", cleanup: func() {}}, nil
+				}
+
+				config := Config{
+					Image: "alpine",
+					Mounts: []Mount{
+						{HostPath: "/host" + targetBackend.allowedCharacter + "ok", SandboxPath: "/sandbox" + targetBackend.allowedCharacter + "ok"},
+					},
+				}
+				var stdout, stderr bytes.Buffer
+				err := backend.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+				if err != nil {
+					t.Fatalf("expected valid character %q to be accepted on %s, got error: %v", targetBackend.allowedCharacter, targetBackend.name, err)
+				}
+			})
 		})
 	}
 }

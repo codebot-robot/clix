@@ -30,6 +30,10 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 		return fmt.Errorf("network isolation is not supported by the chroot sandbox")
 	}
 
+	if len(script.Mounts) > 0 {
+		return fmt.Errorf("mounts are not supported in chroot sandbox")
+	}
+
 	rootPath := script.Image
 	if rootPath == "" {
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
@@ -86,12 +90,6 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 
 	// We start at root of the new root
 	cmd.Dir = "/"
-
-	// We are not handling mounts here yet.
-	// Issue says: "leave a lot of functionality not supported"
-	if len(script.Mounts) > 0 {
-		return fmt.Errorf("mounts are not supported in chroot sandbox")
-	}
 
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 
