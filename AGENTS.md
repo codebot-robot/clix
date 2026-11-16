@@ -135,3 +135,4 @@ Names must also match signatures and behavior: use one name per concept consiste
 ## 7. Coding Guidelines
 
 - **Avoid "Train of Thought" Comments:** When writing code, do not include comments that describe the process of discovery (e.g., "Based on search results," or "According to the issue..."). Focus on explaining the final code's behavior or why it was implemented that way, rather than the research process.
+- **Use `t.Context()` in Tests:** Tests take their context from `t.Context()` (or `b.Context()`), not `context.Background()` or `context.TODO()`, so anything a test starts is cancelled when the test finishes and cannot outlive it.

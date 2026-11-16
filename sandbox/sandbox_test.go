@@ -283,7 +283,7 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 
 		sandbox := &prootSandbox{}
 		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, args)
+		err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, args)
 		if err != nil {
 			t.Fatalf("sandbox.Run failed: %v", err)
 		}
@@ -324,7 +324,7 @@ func TestLibraryCallerLoggerReceivesMessages(t *testing.T) {
 
 	sink := &recordingLogSink{}
 	logger := logr.New(sink)
-	ctx := logr.NewContext(context.Background(), logger)
+	ctx := logr.NewContext(t.Context(), logger)
 
 	sandbox := &dockerSandbox{}
 	script := Config{Image: "alpine"}
@@ -369,7 +369,7 @@ func TestNoLoggerNoOutputToStderr(t *testing.T) {
 	sandbox := &dockerSandbox{}
 	script := Config{Image: "alpine"}
 	var stdout, stderr bytes.Buffer
-	runErr := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+	runErr := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
 
 	if err := pipeWriter.Close(); err != nil {
 		t.Errorf("failed to close pipe writer: %v", err)
@@ -510,7 +510,7 @@ func TestMountValidation(t *testing.T) {
 						Mounts: []Mount{testCase.mount},
 					}
 					var stdout, stderr bytes.Buffer
-					err := backend.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+					err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
 					if err == nil {
 						t.Fatalf("expected error for invalid mount %+v, got nil", testCase.mount)
 					}
@@ -538,7 +538,7 @@ func TestMountValidation(t *testing.T) {
 					},
 				}
 				var stdout, stderr bytes.Buffer
-				err := backend.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+				err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
 				if err != nil {
 					t.Fatalf("expected valid character %q to be accepted on %s, got error: %v", targetBackend.allowedCharacter, targetBackend.name, err)
 				}
