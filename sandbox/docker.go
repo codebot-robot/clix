@@ -25,9 +25,9 @@ import (
 	"golang.org/x/term"
 )
 
-type DockerSandbox struct{}
+type dockerSandbox struct{}
 
-func (s *DockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(2).Info("DockerSandbox: preparing args")
 	cmdArgs, err := buildDockerArgs(script, args, isTerminal(stdin))

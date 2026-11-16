@@ -135,7 +135,7 @@ func TestHelperMainProcess(t *testing.T) {
 		return
 	}
 	execCommand = fakeExecCommand
-	newSandbox = func(string) (sandbox.Sandbox, string) { return &fakeHelperSandbox{}, "docker" }
+	newSandbox = func(string) (sandbox.Sandbox, string, error) { return &fakeHelperSandbox{}, "docker", nil }
 	testBinary := os.Args[0]
 	var subArgs []string
 	for i, arg := range os.Args {

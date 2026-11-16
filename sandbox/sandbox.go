@@ -32,50 +32,96 @@ import (
 
 var execCommand = exec.Command
 
-// Sandbox is the interface implemented by all our sandboxing technologies (docker, chroot etc)
+// Sandbox is the execution environment for running a container image.
 type Sandbox interface {
-	// Run executes the container image defined by script
-	Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error
+	// Run executes the container image described by config with args.
+	// Stdin, stdout, and stderr are wired to the process.
+	// If the executed tool exits with a non-zero status, Run returns an
+	// error wrapping *ExitError.
+	Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, config Config, args []string) error
 }
 
+// Config describes a container run within a sandbox backend.
 type Config struct {
-	Image      string   `json:"image,omitempty"`
-	Entrypoint string   `json:"entrypoint,omitempty"`
-	Mounts     []Mount  `json:"mounts,omitempty"`
-	Env        []EnvVar `json:"env,omitempty"`
+	// Image specifies the container image name, reference, or path.
+	Image string `json:"image,omitempty"`
+	// Entrypoint overrides the container image entrypoint if non-empty.
+	Entrypoint string `json:"entrypoint,omitempty"`
+	// Mounts lists host directories mounted into the sandbox container.
+	Mounts []Mount `json:"mounts,omitempty"`
+	// Env lists environment variables explicitly passed into the sandbox.
+	Env []EnvVar `json:"env,omitempty"`
 }
 
+// EnvVar describes an environment variable passed into the sandbox.
 type EnvVar struct {
-	Name  string `json:"name"`
+	// Name is the environment variable name.
+	Name string `json:"name"`
+	// Value is the literal environment variable value.
 	Value string `json:"value"`
 }
 
+// Mount describes a host directory mounted into the sandbox.
 type Mount struct {
-	HostPath         string `json:"hostPath"`
-	SandboxPath      string `json:"sandboxPath,omitempty"`
-	ReadOnly         bool   `json:"readOnly,omitempty"`
-	WritableFallback bool   `json:"-"`
+	// HostPath is the path to the directory on the host.
+	HostPath string `json:"hostPath"`
+	// SandboxPath is an absolute path inside the sandbox, required.
+	SandboxPath string `json:"sandboxPath,omitempty"`
+	// ReadOnly specifies whether the mount should be read-only.
+	ReadOnly bool `json:"readOnly,omitempty"`
+	// WritableFallback allows backends that do not support read-only mounts
+	// (such as proot) to fall back to a writable mount.
+	WritableFallback bool `json:"-"`
 }
 
 // ExitError indicates that the executed tool exited with a non-zero exit code.
+// Callers can inspect the code using errors.As(err, &exitError).
 type ExitError struct {
 	exitCode int
 }
 
+// Error returns a formatted error string including the exit code.
 func (e *ExitError) Error() string {
 	return fmt.Sprintf("exit status %d", e.exitCode)
 }
 
+// ExitCode returns the tool's non-zero exit code.
 func (e *ExitError) ExitCode() int {
 	return e.exitCode
 }
 
+// NewExitError constructs an *ExitError with the given exitCode.
 func NewExitError(exitCode int) *ExitError {
 	return &ExitError{exitCode: exitCode}
 }
 
 func newExitError(exitCode int) *ExitError {
 	return NewExitError(exitCode)
+}
+
+// New returns a Sandbox implementation for the given backend name.
+// If backendName is empty, it defaults to "docker".
+// Valid backend names are "docker", "apple-container", "chroot", and "proot".
+// If the backend name is unrecognised, New returns an error.
+func New(backendName string) (Sandbox, error) {
+	switch backendName {
+	case "", "docker":
+		return &dockerSandbox{}, nil
+	case "apple-container":
+		return &appleContainerSandbox{}, nil
+	case "chroot":
+		return &chrootSandbox{}, nil
+	case "proot":
+		return &prootSandbox{}, nil
+	default:
+		return nil, fmt.Errorf("unknown sandbox backend %q", backendName)
+	}
+}
+
+// FromEnvironment returns a Sandbox chosen by the CLIX_SANDBOX environment
+// variable, defaulting to "docker" if unset.
+func FromEnvironment() (Sandbox, error) {
+	return New(os.Getenv("CLIX_SANDBOX"))
 }
 
 type preparedRootFS struct {

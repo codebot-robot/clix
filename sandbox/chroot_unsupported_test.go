@@ -26,7 +26,7 @@ import (
 )
 
 func TestChrootUnsupported(t *testing.T) {
-	sandbox := &ChrootSandbox{}
+	sandbox := &chrootSandbox{}
 	script := Config{
 		Image: "test-image",
 	}

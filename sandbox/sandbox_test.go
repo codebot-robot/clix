@@ -280,7 +280,7 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 			return fakeExecCommand(name, args...)
 		}
 
-		sandbox := &ProotSandbox{}
+		sandbox := &prootSandbox{}
 		var stdout, stderr bytes.Buffer
 		err := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, args)
 		if err != nil {
@@ -325,7 +325,7 @@ func TestLibraryCallerLoggerReceivesMessages(t *testing.T) {
 	logger := logr.New(sink)
 	ctx := logr.NewContext(context.Background(), logger)
 
-	sandbox := &DockerSandbox{}
+	sandbox := &dockerSandbox{}
 	script := Config{Image: "alpine"}
 	var stdout, stderr bytes.Buffer
 	err := sandbox.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
@@ -365,7 +365,7 @@ func TestNoLoggerNoOutputToStderr(t *testing.T) {
 	}
 	os.Stderr = pipeWriter
 
-	sandbox := &DockerSandbox{}
+	sandbox := &dockerSandbox{}
 	script := Config{Image: "alpine"}
 	var stdout, stderr bytes.Buffer
 	runErr := sandbox.Run(context.Background(), strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
