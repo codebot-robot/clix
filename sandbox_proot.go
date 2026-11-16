@@ -18,13 +18,29 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
+	"github.com/google/go-containerregistry/pkg/crane"
 )
 
 type ProotSandbox struct{}
 
+var getProotImageSHAFn = getProotImageSHA
+
+func getProotImageSHA(imageRef string) (string, error) {
+	image, err := crane.Pull(imageRef)
+	if err != nil {
+		return "", fmt.Errorf("pulling image %q: %w", imageRef, err)
+	}
+	digest, err := image.Digest()
+	if err != nil {
+		return "", fmt.Errorf("getting image digest: %w", err)
+	}
+	return digest.Hex, nil
+}
+
 func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
 	for _, m := range script.Mounts {
-		if m.ReadOnly {
+		if m.ReadOnly && !m.WritableFallback {
 			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
 		}
 	}
@@ -57,15 +73,10 @@ func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Scr
 		}
 	}
 
-	resolvedMounts, err := resolveMounts(script.Mounts, rootFS.imageSHA, script.key)
-	if err != nil {
-		return fmt.Errorf("error resolving mounts: %w", err)
-	}
-
 	// proot -r realRoot [-b host:guest ...] cmdArgs
 	prootArgs := []string{"-r", rootFS.dir}
 	var warnGit bool
-	for _, m := range resolvedMounts {
+	for _, m := range script.Mounts {
 		if m.ReadOnly {
 			warnGit = true
 		}

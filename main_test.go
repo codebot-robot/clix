@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -278,7 +279,7 @@ func TestResolveMounts(t *testing.T) {
 			}
 			expected := []Mount{
 				{HostPath: repoDir, SandboxPath: repoDir, ReadOnly: false},
-				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: filepath.Join(repoDir, ".git"), ReadOnly: true},
+				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: filepath.Join(repoDir, ".git"), ReadOnly: true, WritableFallback: true},
 			}
 			if len(got) != len(expected) {
 				t.Fatalf("expected %d mounts, got %d", len(expected), len(got))
@@ -299,7 +300,7 @@ func TestResolveMounts(t *testing.T) {
 			}
 			expected := []Mount{
 				{HostPath: repoDir, SandboxPath: "/custom/sandbox", ReadOnly: false},
-				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: "/custom/sandbox/.git", ReadOnly: true},
+				{HostPath: filepath.Join(repoDir, ".git"), SandboxPath: "/custom/sandbox/.git", ReadOnly: true, WritableFallback: true},
 			}
 			if len(got) != len(expected) {
 				t.Fatalf("expected %d mounts, got %d", len(expected), len(got))
@@ -326,7 +327,7 @@ func TestResolveMounts(t *testing.T) {
 			}
 			expected := []Mount{
 				{HostPath: worktreeDir, SandboxPath: worktreeDir, ReadOnly: false},
-				{HostPath: filepath.Join(worktreeDir, ".git"), SandboxPath: filepath.Join(worktreeDir, ".git"), ReadOnly: true},
+				{HostPath: filepath.Join(worktreeDir, ".git"), SandboxPath: filepath.Join(worktreeDir, ".git"), ReadOnly: true, WritableFallback: true},
 			}
 			if len(got) != len(expected) {
 				t.Fatalf("expected %d mounts, got %d", len(expected), len(got))
@@ -427,6 +428,10 @@ func TestBuildDockerArgs(t *testing.T) {
 			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
 		},
 	}
+	scriptPython.Mounts, err = resolveScriptMounts(scriptPython.Mounts, "docker", scriptPython.Image, scriptPython.key)
+	if err != nil {
+		t.Fatalf("resolveScriptMounts failed: %v", err)
+	}
 	cmdArgs, err = buildDockerArgs(scriptPython, args, false)
 	if err != nil {
 		t.Fatalf("buildDockerArgs failed: %v", err)
@@ -469,6 +474,10 @@ func TestBuildDockerArgs(t *testing.T) {
 		Env: []EnvVar{
 			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
 		},
+	}
+	scriptPythonNew.Mounts, err = resolveScriptMounts(scriptPythonNew.Mounts, "docker", scriptPythonNew.Image, scriptPythonNew.key)
+	if err != nil {
+		t.Fatalf("resolveScriptMounts failed: %v", err)
 	}
 	cmdArgs, err = buildDockerArgs(scriptPythonNew, args, false)
 	if err != nil {
@@ -1275,6 +1284,143 @@ func TestMainExitStatus(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "git clone failed") {
 			t.Errorf("expected stderr to contain 'git clone failed', got: %q", stderr)
+		}
+	})
+}
+
+func TestCacheDirPerBackend(t *testing.T) {
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("failed to get user cache dir: %v", err)
+	}
+
+	oldDockerSHA, oldAppleSHA, oldProotSHA := getImageSHAFn, getAppleContainerImageSHAFn, getProotImageSHAFn
+	defer func() {
+		getImageSHAFn, getAppleContainerImageSHAFn, getProotImageSHAFn = oldDockerSHA, oldAppleSHA, oldProotSHA
+	}()
+	getImageSHAFn = func(string) (string, error) { return "dockersha123", nil }
+	getAppleContainerImageSHAFn = func(string) (string, error) { return "applesha123", nil }
+	getProotImageSHAFn = func(string) (string, error) { return "prootsha123", nil }
+
+	mounts := []Mount{{HostPath: "${cacheDir}/data", SandboxPath: "/data"}}
+	for _, testCase := range []struct {
+		backend, sha string
+	}{
+		{"docker", "dockersha123"},
+		{"apple-container", "applesha123"},
+		{"proot", "prootsha123"},
+	} {
+		t.Run(testCase.backend, func(t *testing.T) {
+			if testCase.backend == "proot" {
+				getImageSHAFn = func(string) (string, error) {
+					t.Fatal("proot must not depend on docker for image digest")
+					return "", nil
+				}
+			}
+			resolved, err := resolveScriptMounts(mounts, testCase.backend, "test-image:v1", "key123456")
+			if err != nil {
+				t.Fatalf("resolveScriptMounts failed: %v", err)
+			}
+			expectedPath := filepath.Join(userCache, "clix", "cache", testCase.sha, "key123456", "data")
+			if resolved[0].HostPath != expectedPath {
+				t.Errorf("expected %q, got %q", expectedPath, resolved[0].HostPath)
+			}
+		})
+	}
+}
+
+func TestBackendArgumentsIdentical(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd failed: %v", err)
+	}
+
+	script := Script{
+		Image:      "my-image:v1",
+		Entrypoint: "/bin/mytool",
+		Mounts: []Mount{
+			{HostPath: "/host/ro", SandboxPath: "/sandbox/ro", ReadOnly: true, WritableFallback: true},
+			{HostPath: "/host/rw", SandboxPath: "/sandbox/rw", ReadOnly: false},
+		},
+		Env: []EnvVar{
+			{Name: "VAR_A", Value: "VAL_A"},
+		},
+	}
+	args := []string{"run", "--flag"}
+
+	t.Run("Docker", func(t *testing.T) {
+		cmdArgs, err := buildDockerArgs(script, args, false)
+		if err != nil {
+			t.Fatalf("buildDockerArgs failed: %v", err)
+		}
+		expected := []string{
+			"run", "--rm", "-i",
+			"-v", "/host/ro:/sandbox/ro:ro",
+			"-v", "/host/rw:/sandbox/rw",
+			"-e", "VAR_A=VAL_A",
+			"-w", cwd,
+			"--entrypoint", "/bin/mytool",
+			"my-image:v1",
+			"run", "--flag",
+		}
+		if !slices.Equal(cmdArgs, expected) {
+			t.Errorf("got %v, want %v", cmdArgs, expected)
+		}
+	})
+
+	t.Run("AppleContainer", func(t *testing.T) {
+		cmdArgs, err := buildAppleContainerArgs(script, args, false)
+		if err != nil {
+			t.Fatalf("buildAppleContainerArgs failed: %v", err)
+		}
+		expected := []string{
+			"run", "--rm",
+			"--mount", "type=bind,source=/host/ro,target=/sandbox/ro,readonly",
+			"--mount", "type=bind,source=/host/rw,target=/sandbox/rw",
+			"-e", "VAR_A=VAL_A",
+			"-w", cwd,
+			"--entrypoint", "/bin/mytool",
+			"my-image:v1",
+			"run", "--flag",
+		}
+		if !slices.Equal(cmdArgs, expected) {
+			t.Errorf("got %v, want %v", cmdArgs, expected)
+		}
+	})
+
+	t.Run("Proot", func(t *testing.T) {
+		oldPrepareRootFS := prepareRootFSFn
+		defer func() { prepareRootFSFn = oldPrepareRootFS }()
+		prepareRootFSFn = func(imageRef string) (*preparedRootFS, error) {
+			return &preparedRootFS{
+				dir:     "/mock/rootfs",
+				cleanup: func() {},
+			}, nil
+		}
+
+		var capturedArgs []string
+		oldExecCommand := execCommand
+		defer func() { execCommand = oldExecCommand }()
+		execCommand = func(name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return fakeExecCommand(name, args...)
+		}
+
+		sandbox := &ProotSandbox{}
+		var stdout, stderr bytes.Buffer
+		err := sandbox.Run(strings.NewReader(""), &stdout, &stderr, script, args)
+		if err != nil {
+			t.Fatalf("sandbox.Run failed: %v", err)
+		}
+		expected := []string{
+			"-r", "/mock/rootfs",
+			"-b", "/host/ro:/sandbox/ro",
+			"-b", "/host/rw:/sandbox/rw",
+			"/bin/mytool",
+			"run", "--flag",
+		}
+		if !slices.Equal(capturedArgs, expected) {
+			t.Errorf("got %v, want %v", capturedArgs, expected)
 		}
 	})
 }

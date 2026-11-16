@@ -38,6 +38,11 @@ func TestBuildAppleContainerArgs(t *testing.T) {
 			{Name: "PYTHONPYCACHEPREFIX", Value: "/tmp/.clix-pycache"},
 		},
 	}
+	var err error
+	script.Mounts, err = resolveScriptMounts(script.Mounts, "apple-container", script.Image, script.key)
+	if err != nil {
+		t.Fatalf("resolveScriptMounts failed: %v", err)
+	}
 	args := []string{"script.py"}
 
 	cmdArgs, err := buildAppleContainerArgs(script, args, false)

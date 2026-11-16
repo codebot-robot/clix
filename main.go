@@ -69,9 +69,10 @@ type EnvVar struct {
 }
 
 type Mount struct {
-	HostPath    string `json:"hostPath"`
-	SandboxPath string `json:"sandboxPath,omitempty"`
-	ReadOnly    bool   `json:"readOnly,omitempty"`
+	HostPath         string `json:"hostPath"`
+	SandboxPath      string `json:"sandboxPath,omitempty"`
+	ReadOnly         bool   `json:"readOnly,omitempty"`
+	WritableFallback bool   `json:"-"`
 }
 
 type GoConfig struct {
@@ -138,12 +139,10 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	}
 	log(1, "Using sandbox: %s", sandboxType)
 
+	var runArgs []string
 	if script.Image != "" {
-		log(1, "Running image: %s", script.Image)
-		return sandbox.Run(stdin, stdout, stderr, script, scriptArgs)
-	}
-
-	if script.Go != nil {
+		runArgs = scriptArgs
+	} else if script.Go != nil {
 		if len(script.Mounts) > 0 {
 			log(1, "Script has mounts, transforming into Docker script")
 			// Transform into a Docker script
@@ -167,15 +166,24 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 			// Prepend "go", "run", goPackage to the user arguments
 			// Note: We don't set Entrypoint because runDocker appends Image then Args.
 			// So `docker run ... golang:latest go run pkg args...` works.
-			newArgs := append([]string{"go", "run", goPackage}, scriptArgs...)
+			runArgs = append([]string{"go", "run", goPackage}, scriptArgs...)
 			log(1, "Transformed command: go run %s", goPackage)
-			return sandbox.Run(stdin, stdout, stderr, script, newArgs)
+		} else {
+			log(1, "Running go run: %s", script.Go.Run)
+			return runGo(stdin, stdout, stderr, script.Go, scriptArgs)
 		}
-		log(1, "Running go run: %s", script.Go.Run)
-		return runGo(stdin, stdout, stderr, script.Go, scriptArgs)
+	} else {
+		return fmt.Errorf("error: script configuration missing (expected 'go' or 'image')")
 	}
 
-	return fmt.Errorf("error: script configuration missing (expected 'go' or 'image')")
+	resolvedMounts, err := resolveScriptMounts(script.Mounts, sandboxType, script.Image, script.key)
+	if err != nil {
+		return fmt.Errorf("error resolving mounts: %w", err)
+	}
+	script.Mounts = resolvedMounts
+
+	log(1, "Running image: %s", script.Image)
+	return sandbox.Run(stdin, stdout, stderr, script, runArgs)
 }
 
 func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []string) error {

@@ -54,30 +54,7 @@ func buildDockerArgs(script Script, args []string, isTerm bool) ([]string, error
 		cmdArgs = append(cmdArgs, "-t")
 	}
 
-	// Resolve cache directory if needed
-	imageSHA := ""
-	needsSHA := false
 	for _, m := range script.Mounts {
-		if strings.Contains(m.HostPath, "{cacheDir}") || strings.Contains(m.HostPath, "${cacheDir}") {
-			needsSHA = true
-			break
-		}
-	}
-
-	if needsSHA {
-		var err error
-		imageSHA, err = getImageSHAFn(script.Image)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get image SHA: %w", err)
-		}
-	}
-
-	resolvedMounts, err := resolveMounts(script.Mounts, imageSHA, script.key)
-	if err != nil {
-		return nil, fmt.Errorf("error resolving mounts: %w", err)
-	}
-
-	for _, m := range resolvedMounts {
 		v := fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath)
 		if m.ReadOnly {
 			v += ":ro"
