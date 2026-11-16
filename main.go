@@ -127,8 +127,8 @@ func newLoggerWithWriter(writer io.Writer) logr.Logger {
 
 var defaultLogger = newLogger()
 
-func log(level int, format string, v ...any) {
-	defaultLogger.V(level).Info(fmt.Sprintf(format, v...))
+func log(level int, format string, values ...any) {
+	defaultLogger.V(level).Info(fmt.Sprintf(format, values...))
 }
 
 type Script struct {
@@ -186,12 +186,12 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 		return fmt.Errorf("error parsing script file: %w", err)
 	}
 
-	absPath, err := filepath.Abs(scriptPath)
+	absolutePath, err := filepath.Abs(scriptPath)
 	if err != nil {
 		return fmt.Errorf("error resolving script path: %w", err)
 	}
-	h := sha256.Sum256([]byte(absPath))
-	script.key = hex.EncodeToString(h[:])[:16]
+	hash := sha256.Sum256([]byte(absolutePath))
+	script.key = hex.EncodeToString(hash[:])[:16]
 
 	if script.Build != nil {
 		imageName, err := buildImage(stdin, stdout, stderr, script.Build, scriptPath)
@@ -284,7 +284,7 @@ func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []s
 	return nil
 }
 
-func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, scriptName string) (_ string, retErr error) {
+func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, scriptName string) (_ string, returnError error) {
 	if build.Git == "" {
 		return "", fmt.Errorf("build.git is required")
 	}
@@ -302,22 +302,22 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	log(2, "Remote head is %s", commitHash)
 
 	// Construct image tag: clix-<script-name>-<hash-of-repo-url>:<commit-hash>
-	repoHash := sha256.Sum256([]byte(build.Git))
-	repoHashStr := hex.EncodeToString(repoHash[:])[:8] // Short hash for readability
+	repositoryHash := sha256.Sum256([]byte(build.Git))
+	repositoryHashString := hex.EncodeToString(repositoryHash[:])[:8] // Short hash for readability
 
-	absPath, err := filepath.Abs(scriptName)
+	absolutePath, err := filepath.Abs(scriptName)
 	if err != nil {
-		absPath = scriptName // Fallback
+		absolutePath = scriptName // Fallback
 	}
-	scriptHash := sha256.Sum256([]byte(absPath))
-	scriptHashStr := hex.EncodeToString(scriptHash[:])[:8]
+	scriptHash := sha256.Sum256([]byte(absolutePath))
+	scriptHashString := hex.EncodeToString(scriptHash[:])[:8]
 
 	baseName := filepath.Base(scriptName)
 	baseName = strings.TrimSuffix(baseName, filepath.Ext(baseName))
 	baseName = strings.ReplaceAll(baseName, ":", "-")
 	baseName = strings.ToLower(baseName)
 
-	imageTag := fmt.Sprintf("clix-%s-%s-%s:%s", baseName, scriptHashStr, repoHashStr, commitHash)
+	imageTag := fmt.Sprintf("clix-%s-%s-%s:%s", baseName, scriptHashString, repositoryHashString, commitHash)
 	log(1, "Generated image tag: %s", imageTag)
 
 	// Check if image exists
@@ -340,7 +340,7 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	}
 	defer func() {
 		if err := os.RemoveAll(tempDir); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("failed to remove temp dir: %w", err))
+			returnError = errors.Join(returnError, fmt.Errorf("failed to remove temp dir: %w", err))
 		}
 	}()
 
@@ -393,9 +393,9 @@ func buildImage(stdin io.Reader, stdout, stderr io.Writer, build *BuildConfig, s
 	return imageTag, nil
 }
 
-func getRemoteHead(repo, branch string) (string, error) {
-	log(2, "Getting remote head for %s (branch: %s)", repo, branch)
-	args := []string{"ls-remote", "--", repo}
+func getRemoteHead(repository, branch string) (string, error) {
+	log(2, "Getting remote head for %s (branch: %s)", repository, branch)
+	args := []string{"ls-remote", "--", repository}
 	if branch != "" {
 		args = append(args, "refs/heads/"+branch, "refs/tags/"+branch)
 	} else {
@@ -403,12 +403,12 @@ func getRemoteHead(repo, branch string) (string, error) {
 	}
 
 	cmd := execCommand("git", args...)
-	out, err := cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	var selectedHash string
 	if branch != "" {
 		var tagHash string
@@ -449,7 +449,7 @@ func getRemoteHead(repo, branch string) (string, error) {
 		return "", fmt.Errorf("invalid commit hash %q: %w", selectedHash, err)
 	}
 
-	log(2, "Remote head for %s is %s", repo, selectedHash)
+	log(2, "Remote head for %s is %s", repository, selectedHash)
 	return selectedHash, nil
 }
 
@@ -463,11 +463,11 @@ func imageExists(tag string) (bool, error) {
 
 	log(2, "Checking if image exists: %s %v", cmdName, args)
 	cmd := execCommand(cmdName, args...)
-	out, err := cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		return false, err
 	}
-	exists := strings.TrimSpace(string(out)) != ""
+	exists := strings.TrimSpace(string(output)) != ""
 	log(2, "Image exists (%s): %v", tag, exists)
 	return exists, nil
 }

@@ -171,60 +171,60 @@ type preparedRootFS struct {
 	cleanup func()
 }
 
-func imageEnv(img v1.Image) ([]string, error) {
-	cf, err := img.ConfigFile()
+func imageEnv(image v1.Image) ([]string, error) {
+	configFile, err := image.ConfigFile()
 	if err != nil {
 		return nil, fmt.Errorf("reading image config: %w", err)
 	}
-	if cf == nil {
+	if configFile == nil {
 		return nil, nil
 	}
-	return cf.Config.Env, nil
+	return configFile.Config.Env, nil
 }
 
 func prepareRootFS(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 	// Assume it is a container image
-	img, err := crane.Pull(imageRef)
+	image, err := crane.Pull(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
 	}
 
-	env, err := imageEnv(img)
+	env, err := imageEnv(image)
 	if err != nil {
 		return nil, err
 	}
 
-	tmpDir, err := os.MkdirTemp("", "clix-chroot-*")
+	tempDir, err := os.MkdirTemp("", "clix-chroot-*")
 	if err != nil {
 		return nil, err
 	}
 	cleanup := func() {
-		if err := os.RemoveAll(tmpDir); err != nil {
+		if err := os.RemoveAll(tempDir); err != nil {
 			logger := logr.FromContextOrDiscard(ctx)
-			logger.Error(err, "failed to remove temp dir", "directory", tmpDir)
+			logger.Error(err, "failed to remove temp dir", "directory", tempDir)
 		}
 	}
 
 	// Export to tar stream
-	pr, pw := io.Pipe()
+	pipeReader, pipeWriter := io.Pipe()
 	go func() {
-		err := crane.Export(img, pw)
-		pw.CloseWithError(err)
+		err := crane.Export(image, pipeWriter)
+		pipeWriter.CloseWithError(err)
 	}()
 
-	if err := untar(pr, tmpDir); err != nil {
+	if err := untar(pipeReader, tempDir); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("unpacking image: %w", err)
 	}
 
 	return &preparedRootFS{
-		dir:     tmpDir,
+		dir:     tempDir,
 		env:     env,
 		cleanup: cleanup,
 	}, nil
 }
 
-var prepareRootFSFn = prepareRootFS
+var prepareRootFSFunction = prepareRootFS
 
 func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
 	var order []string
@@ -261,20 +261,20 @@ func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
 	return result
 }
 
-func untar(r io.Reader, dest string) (retErr error) {
-	root, err := os.OpenRoot(dest)
+func untar(reader io.Reader, destination string) (returnError error) {
+	root, err := os.OpenRoot(destination)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil && retErr == nil {
-			retErr = closeErr
+		if closeErr := root.Close(); closeErr != nil && returnError == nil {
+			returnError = closeErr
 		}
 	}()
 
-	tr := tar.NewReader(r)
+	tarReader := tar.NewReader(reader)
 	for {
-		header, err := tr.Next()
+		header, err := tarReader.Next()
 		if err == io.EOF {
 			break
 		}
@@ -297,7 +297,7 @@ func untar(r io.Reader, dest string) (retErr error) {
 				return err
 			}
 		case tar.TypeReg:
-			if err := extractReg(root, name, header, tr); err != nil {
+			if err := extractRegularFile(root, name, header, tarReader); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -310,9 +310,9 @@ func untar(r io.Reader, dest string) (retErr error) {
 }
 
 func removeNonDir(root *os.Root, name string) error {
-	fi, err := root.Lstat(name)
+	fileInfo, err := root.Lstat(name)
 	if err == nil {
-		if !fi.IsDir() {
+		if !fileInfo.IsDir() {
 			return root.Remove(name)
 		}
 		return nil
@@ -327,21 +327,21 @@ func extractDir(root *os.Root, name string) error {
 	return root.MkdirAll(name, 0755)
 }
 
-func extractReg(root *os.Root, name string, header *tar.Header, r io.Reader) error {
+func extractRegularFile(root *os.Root, name string, header *tar.Header, reader io.Reader) error {
 	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
 		return err
 	}
 	if err := removeNonDir(root, name); err != nil {
 		return err
 	}
-	perm := header.FileInfo().Mode().Perm()
-	f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	permissions := header.FileInfo().Mode().Perm()
+	file, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, permissions)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(f, r)
-	chmodErr := f.Chmod(perm)
-	closeErr := f.Close()
+	_, copyErr := io.Copy(file, reader)
+	chmodErr := file.Chmod(permissions)
+	closeErr := file.Close()
 	return errors.Join(copyErr, chmodErr, closeErr)
 }
 

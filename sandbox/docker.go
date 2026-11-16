@@ -50,13 +50,13 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	return nil
 }
 
-func buildDockerArgs(script Config, args []string, isTerm bool) ([]string, error) {
+func buildDockerArgs(script Config, args []string, terminal bool) ([]string, error) {
 	if err := validateMounts(script.Mounts, ":"); err != nil {
 		return nil, err
 	}
 
 	cmdArgs := []string{"run", "--rm", "-i"}
-	if isTerm {
+	if terminal {
 		cmdArgs = append(cmdArgs, "-t")
 	}
 
@@ -66,24 +66,24 @@ func buildDockerArgs(script Config, args []string, isTerm bool) ([]string, error
 		return nil, fmt.Errorf("network mode %q is not supported by the docker sandbox", script.Network)
 	}
 
-	for _, m := range script.Mounts {
-		v := fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath)
-		if m.ReadOnly {
-			v += ":ro"
+	for _, mount := range script.Mounts {
+		mountArg := fmt.Sprintf("%s:%s", mount.HostPath, mount.SandboxPath)
+		if mount.ReadOnly {
+			mountArg += ":ro"
 		}
-		cmdArgs = append(cmdArgs, "-v", v)
+		cmdArgs = append(cmdArgs, "-v", mountArg)
 	}
 
-	for _, e := range script.Env {
-		cmdArgs = append(cmdArgs, "-e", fmt.Sprintf("%s=%s", e.Name, e.Value))
+	for _, envVar := range script.Env {
+		cmdArgs = append(cmdArgs, "-e", fmt.Sprintf("%s=%s", envVar.Name, envVar.Value))
 	}
 
 	// Set working directory to CWD if possible
-	cwd, err := os.Getwd()
+	workingDir, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("error getting current working directory: %w", err)
 	}
-	cmdArgs = append(cmdArgs, "-w", cwd)
+	cmdArgs = append(cmdArgs, "-w", workingDir)
 
 	if script.Entrypoint != "" {
 		cmdArgs = append(cmdArgs, "--entrypoint", script.Entrypoint)
@@ -94,10 +94,10 @@ func buildDockerArgs(script Config, args []string, isTerm bool) ([]string, error
 	return cmdArgs, nil
 }
 
-func isTerminal(r io.Reader) bool {
-	f, ok := r.(*os.File)
+func isTerminal(reader io.Reader) bool {
+	file, ok := reader.(*os.File)
 	if !ok {
 		return false
 	}
-	return term.IsTerminal(int(f.Fd()))
+	return term.IsTerminal(int(file.Fd()))
 }

@@ -39,7 +39,7 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
 	}
 
-	rootFS, err := prepareRootFSFn(ctx, rootPath)
+	rootFS, err := prepareRootFSFunction(ctx, rootPath)
 	if err != nil {
 		return err
 	}

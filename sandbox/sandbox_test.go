@@ -264,9 +264,9 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 	})
 
 	t.Run("Proot", func(t *testing.T) {
-		oldPrepareRootFS := prepareRootFSFn
-		defer func() { prepareRootFSFn = oldPrepareRootFS }()
-		prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+		oldPrepareRootFS := prepareRootFSFunction
+		defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+		prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 			return &preparedRootFS{
 				dir:     "/mock/rootfs",
 				cleanup: func() {},
@@ -498,9 +498,9 @@ func TestMountValidation(t *testing.T) {
 						return nil
 					}
 
-					oldPrepareRootFS := prepareRootFSFn
-					defer func() { prepareRootFSFn = oldPrepareRootFS }()
-					prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+					oldPrepareRootFS := prepareRootFSFunction
+					defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+					prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 						t.Fatalf("prepareRootFS was called for invalid mount")
 						return nil, nil
 					}
@@ -525,9 +525,9 @@ func TestMountValidation(t *testing.T) {
 				defer func() { execCommand = oldExecCommand }()
 				execCommand = fakeExecCommand
 
-				oldPrepareRootFS := prepareRootFSFn
-				defer func() { prepareRootFSFn = oldPrepareRootFS }()
-				prepareRootFSFn = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+				oldPrepareRootFS := prepareRootFSFunction
+				defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+				prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
 					return &preparedRootFS{dir: "/mock", cleanup: func() {}}, nil
 				}
 

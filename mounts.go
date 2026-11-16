@@ -28,7 +28,7 @@ import (
 
 func resolveMounts(mounts []sandbox.Mount, imageSHA, scriptKey string) ([]sandbox.Mount, error) {
 	var resolved []sandbox.Mount
-	cwd, err := os.Getwd()
+	workingDir, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
@@ -37,11 +37,11 @@ func resolveMounts(mounts []sandbox.Mount, imageSHA, scriptKey string) ([]sandbo
 		return nil, fmt.Errorf("failed to get user home dir: %w", err)
 	}
 
-	for _, m := range mounts {
-		origHostPath := m.HostPath
+	for _, mount := range mounts {
+		originalHostPath := mount.HostPath
 		var cacheDir string
-		if strings.Contains(m.HostPath, "{cacheDir}") || strings.Contains(m.HostPath, "${cacheDir}") {
-			if strings.Count(m.HostPath, "{cacheDir}") > strings.Count(m.HostPath, "${cacheDir}") {
+		if strings.Contains(mount.HostPath, "{cacheDir}") || strings.Contains(mount.HostPath, "${cacheDir}") {
+			if strings.Count(mount.HostPath, "{cacheDir}") > strings.Count(mount.HostPath, "${cacheDir}") {
 				fmt.Fprintf(os.Stderr, "Warning: usage of {cacheDir} is deprecated and will be removed in future versions. Please use ${cacheDir} instead.\n")
 			}
 			if imageSHA == "" {
@@ -56,51 +56,51 @@ func resolveMounts(mounts []sandbox.Mount, imageSHA, scriptKey string) ([]sandbo
 			if err := os.MkdirAll(cacheDir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create cache dir: %w", err)
 			}
-			m.HostPath = strings.ReplaceAll(m.HostPath, "${cacheDir}", cacheDir)
-			m.HostPath = strings.ReplaceAll(m.HostPath, "{cacheDir}", cacheDir)
+			mount.HostPath = strings.ReplaceAll(mount.HostPath, "${cacheDir}", cacheDir)
+			mount.HostPath = strings.ReplaceAll(mount.HostPath, "{cacheDir}", cacheDir)
 		}
 
-		isRepoRoot := m.HostPath == "git.repoRoot(cwd)"
+		isRepoRoot := mount.HostPath == "git.repoRoot(cwd)"
 		if isRepoRoot {
-			root, err := findGitRoot(cwd)
+			root, err := findGitRoot(workingDir)
 			if err != nil {
 				return nil, fmt.Errorf("failed to find git root: %w", err)
 			}
-			m.HostPath = root
+			mount.HostPath = root
 		}
 
-		if strings.HasPrefix(m.HostPath, "~/") {
-			m.HostPath = filepath.Join(home, m.HostPath[2:])
-		} else if m.HostPath == "~" {
-			m.HostPath = home
+		if strings.HasPrefix(mount.HostPath, "~/") {
+			mount.HostPath = filepath.Join(home, mount.HostPath[2:])
+		} else if mount.HostPath == "~" {
+			mount.HostPath = home
 		}
 
 		// TODO: Resolve this better once we find a container image where HOME is not /root
-		if strings.HasPrefix(m.SandboxPath, "~/") {
-			m.SandboxPath = "/root/" + m.SandboxPath[2:]
-		} else if m.SandboxPath == "~" {
-			m.SandboxPath = "/root"
+		if strings.HasPrefix(mount.SandboxPath, "~/") {
+			mount.SandboxPath = "/root/" + mount.SandboxPath[2:]
+		} else if mount.SandboxPath == "~" {
+			mount.SandboxPath = "/root"
 		}
 
-		m.HostPath = filepath.Clean(m.HostPath)
+		mount.HostPath = filepath.Clean(mount.HostPath)
 
-		if m.SandboxPath == "" {
-			m.SandboxPath = m.HostPath
+		if mount.SandboxPath == "" {
+			mount.SandboxPath = mount.HostPath
 		}
 
-		if err := validateMount(m, origHostPath, cacheDir); err != nil {
+		if err := validateMount(mount, originalHostPath, cacheDir); err != nil {
 			return nil, err
 		}
 
-		resolved = append(resolved, m)
+		resolved = append(resolved, mount)
 		if isRepoRoot {
 			gitMount := sandbox.Mount{
-				HostPath:         filepath.Join(m.HostPath, ".git"),
-				SandboxPath:      filepath.Join(m.SandboxPath, ".git"),
+				HostPath:         filepath.Join(mount.HostPath, ".git"),
+				SandboxPath:      filepath.Join(mount.SandboxPath, ".git"),
 				ReadOnly:         true,
 				WritableFallback: true,
 			}
-			if err := validateMount(gitMount, origHostPath, cacheDir); err != nil {
+			if err := validateMount(gitMount, originalHostPath, cacheDir); err != nil {
 				return nil, err
 			}
 			resolved = append(resolved, gitMount)
@@ -123,13 +123,13 @@ func resolveScriptMounts(mounts []sandbox.Mount, sandboxType, image, scriptKey s
 		var err error
 		switch sandboxType {
 		case "apple-container":
-			imageSHA, err = getAppleContainerImageSHAFn(image)
+			imageSHA, err = getAppleContainerImageSHAFunction(image)
 		case "proot":
-			imageSHA, err = getProotImageSHAFn(image)
+			imageSHA, err = getProotImageSHAFunction(image)
 		case "chroot":
 			return nil, fmt.Errorf("mounts are not supported in chroot sandbox")
 		default:
-			imageSHA, err = getImageSHAFn(image)
+			imageSHA, err = getImageSHAFunction(image)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to get image SHA: %w", err)
@@ -139,11 +139,11 @@ func resolveScriptMounts(mounts []sandbox.Mount, sandboxType, image, scriptKey s
 	return resolveMounts(mounts, imageSHA, scriptKey)
 }
 
-func validateMount(m sandbox.Mount, origHostPath, cacheDir string) error {
+func validateMount(mount sandbox.Mount, originalHostPath, cacheDir string) error {
 	if cacheDir != "" {
-		rel, err := filepath.Rel(cacheDir, m.HostPath)
-		if err != nil || !filepath.IsLocal(rel) {
-			return fmt.Errorf("mount %q: host path escapes cache directory", origHostPath)
+		relativePath, err := filepath.Rel(cacheDir, mount.HostPath)
+		if err != nil || !filepath.IsLocal(relativePath) {
+			return fmt.Errorf("mount %q: host path escapes cache directory", originalHostPath)
 		}
 	}
 	return nil
@@ -169,16 +169,16 @@ func findGitRoot(path string) (string, error) {
 	}
 }
 
-var getImageSHAFn = getImageSHA
+var getImageSHAFunction = getImageSHA
 
 func getImageSHA(image string) (string, error) {
 	log(2, "Getting SHA for image: %s", image)
 	cmd := execCommand("docker", "images", "--no-trunc", "--quiet", image)
-	out, err := cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("error running docker images: %w", err)
 	}
-	sha := strings.TrimSpace(string(out))
+	sha := strings.TrimSpace(string(output))
 	if sha == "" {
 		log(1, "Image %s not found locally, pulling...", image)
 		// Try pulling it
@@ -190,11 +190,11 @@ func getImageSHA(image string) (string, error) {
 		}
 		// Try again
 		cmd = execCommand("docker", "images", "--no-trunc", "--quiet", image)
-		out, err = cmd.Output()
+		output, err = cmd.Output()
 		if err != nil {
 			return "", fmt.Errorf("error running docker images after pull: %w", err)
 		}
-		sha = strings.TrimSpace(string(out))
+		sha = strings.TrimSpace(string(output))
 	}
 
 	if sha == "" {
@@ -209,12 +209,12 @@ func getImageSHA(image string) (string, error) {
 	return sha, nil
 }
 
-var getAppleContainerImageSHAFn = getAppleContainerImageSHA
+var getAppleContainerImageSHAFunction = getAppleContainerImageSHA
 
 func getAppleContainerImageSHA(image string) (string, error) {
 	// For apple/container we try to get the image digest using "inspect"
 	cmd := execCommand("container", "image", "inspect", image)
-	out, err := cmd.Output()
+	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("error running container image inspect: %w", err)
 	}
@@ -230,7 +230,7 @@ func getAppleContainerImageSHA(image string) (string, error) {
 		} `json:"index"`
 	}
 
-	if err := json.Unmarshal(out, &info); err != nil {
+	if err := json.Unmarshal(output, &info); err != nil {
 		// If unmarshalling fails, try to just return the image name as hash (not ideal but better than nothing)
 		return "", fmt.Errorf("failed to parse container image inspect output: %w", err)
 	}
@@ -250,7 +250,7 @@ func getAppleContainerImageSHA(image string) (string, error) {
 	return digest, nil
 }
 
-var getProotImageSHAFn = getProotImageSHA
+var getProotImageSHAFunction = getProotImageSHA
 
 func getProotImageSHA(imageRef string) (string, error) {
 	image, err := crane.Pull(imageRef)
