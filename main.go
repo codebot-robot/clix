@@ -25,10 +25,24 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gke-labs/clix/sandbox"
 	"sigs.k8s.io/yaml"
 )
 
 var execCommand = exec.Command
+
+var newSandbox = func(sandboxType string) (sandbox.Sandbox, string) {
+	switch sandboxType {
+	case "chroot":
+		return &sandbox.ChrootSandbox{}, "chroot"
+	case "proot":
+		return &sandbox.ProotSandbox{}, "proot"
+	case "apple-container":
+		return &sandbox.AppleContainerSandbox{}, "apple-container"
+	default:
+		return &sandbox.DockerSandbox{}, "docker"
+	}
+}
 
 func log(level int, format string, v ...any) {
 	verbosity := 0
@@ -43,12 +57,9 @@ func log(level int, format string, v ...any) {
 }
 
 type Script struct {
-	Go         *GoConfig    `json:"go,omitempty"`
-	Build      *BuildConfig `json:"build,omitempty"`
-	Image      string       `json:"image,omitempty"`
-	Entrypoint string       `json:"entrypoint,omitempty"`
-	Mounts     []Mount      `json:"mounts,omitempty"`
-	Env        []EnvVar     `json:"env,omitempty"`
+	Go    *GoConfig    `json:"go,omitempty"`
+	Build *BuildConfig `json:"build,omitempty"`
+	sandbox.Config
 
 	key string
 }
@@ -63,18 +74,6 @@ type BuildConfig struct {
 	Dockerfile string `json:"dockerfile,omitempty"`
 }
 
-type EnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-type Mount struct {
-	HostPath         string `json:"hostPath"`
-	SandboxPath      string `json:"sandboxPath,omitempty"`
-	ReadOnly         bool   `json:"readOnly,omitempty"`
-	WritableFallback bool   `json:"-"`
-}
-
 type GoConfig struct {
 	Run     string `json:"run"`
 	Version string `json:"version,omitempty"`
@@ -82,7 +81,7 @@ type GoConfig struct {
 
 func main() {
 	if err := run(os.Stdin, os.Stdout, os.Stderr, os.Args); err != nil {
-		var exitError *ExitError
+		var exitError *sandbox.ExitError
 		if errors.As(err, &exitError) {
 			os.Exit(exitError.ExitCode())
 		}
@@ -124,19 +123,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 		script.Image = imageName
 	}
 
-	var sandbox Sandbox
-	sandboxType := os.Getenv("CLIX_SANDBOX")
-	switch sandboxType {
-	case "chroot":
-		sandbox = &ChrootSandbox{}
-	case "proot":
-		sandbox = &ProotSandbox{}
-	case "apple-container":
-		sandbox = &AppleContainerSandbox{}
-	default:
-		sandboxType = "docker"
-		sandbox = &DockerSandbox{}
-	}
+	backend, sandboxType := newSandbox(os.Getenv("CLIX_SANDBOX"))
 	log(1, "Using sandbox: %s", sandboxType)
 
 	var runArgs []string
@@ -149,11 +136,11 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 			script.Image = "golang:latest"
 
 			// Add cache mounts for Go to speed up subsequent runs
-			script.Mounts = append(script.Mounts, Mount{
+			script.Mounts = append(script.Mounts, sandbox.Mount{
 				HostPath:    "${cacheDir}/gopath",
 				SandboxPath: "/go",
 			})
-			script.Mounts = append(script.Mounts, Mount{
+			script.Mounts = append(script.Mounts, sandbox.Mount{
 				HostPath:    "${cacheDir}/cache",
 				SandboxPath: "/root/.cache",
 			})
@@ -183,7 +170,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	script.Mounts = resolvedMounts
 
 	log(1, "Running image: %s", script.Image)
-	return sandbox.Run(stdin, stdout, stderr, script, runArgs)
+	return backend.Run(stdin, stdout, stderr, script.Config, runArgs)
 }
 
 func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []string) error {
@@ -208,7 +195,7 @@ func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []s
 
 	if err := cmd.Run(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
-			return newExitError(exitError.ExitCode())
+			return sandbox.NewExitError(exitError.ExitCode())
 		}
 		return fmt.Errorf("error running command: %w", err)
 	}

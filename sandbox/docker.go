@@ -12,21 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 
 	"golang.org/x/term"
 )
 
 type DockerSandbox struct{}
 
-func (s *DockerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
+func (s *DockerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	log(2, "DockerSandbox: preparing args")
 	cmdArgs, err := buildDockerArgs(script, args, isTerminal(stdin))
 	if err != nil {
@@ -48,7 +47,7 @@ func (s *DockerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 	return nil
 }
 
-func buildDockerArgs(script Script, args []string, isTerm bool) ([]string, error) {
+func buildDockerArgs(script Config, args []string, isTerm bool) ([]string, error) {
 	cmdArgs := []string{"run", "--rm", "-i"}
 	if isTerm {
 		cmdArgs = append(cmdArgs, "-t")
@@ -80,46 +79,6 @@ func buildDockerArgs(script Script, args []string, isTerm bool) ([]string, error
 	cmdArgs = append(cmdArgs, args...)
 
 	return cmdArgs, nil
-}
-
-var getImageSHAFn = getImageSHA
-
-func getImageSHA(image string) (string, error) {
-	log(2, "Getting SHA for image: %s", image)
-	cmd := execCommand("docker", "images", "--no-trunc", "--quiet", image)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("error running docker images: %w", err)
-	}
-	sha := strings.TrimSpace(string(out))
-	if sha == "" {
-		log(1, "Image %s not found locally, pulling...", image)
-		// Try pulling it
-		pullCmd := execCommand("docker", "pull", image)
-		pullCmd.Stdout = os.Stderr
-		pullCmd.Stderr = os.Stderr
-		if err := pullCmd.Run(); err != nil {
-			return "", fmt.Errorf("failed to pull image %s: %w", image, err)
-		}
-		// Try again
-		cmd = execCommand("docker", "images", "--no-trunc", "--quiet", image)
-		out, err = cmd.Output()
-		if err != nil {
-			return "", fmt.Errorf("error running docker images after pull: %w", err)
-		}
-		sha = strings.TrimSpace(string(out))
-	}
-
-	if sha == "" {
-		return "", fmt.Errorf("image still not found after pull: %s", image)
-	}
-
-	// sha is like "sha256:..."
-	if strings.HasPrefix(sha, "sha256:") {
-		sha = sha[7:]
-	}
-	log(2, "Image SHA for %s is %s", image, sha)
-	return sha, nil
 }
 
 func isTerminal(r io.Reader) bool {

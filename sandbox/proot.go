@@ -12,22 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"syscall"
 )
 
-type ChrootSandbox struct{}
+type ProotSandbox struct{}
 
-func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
+func (s *ProotSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+	for _, m := range script.Mounts {
+		if m.ReadOnly && !m.WritableFallback {
+			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
+		}
+	}
+
 	rootPath := script.Image
 	if rootPath == "" {
-		return fmt.Errorf("ChrootSandbox requires an image path (used as root directory)")
+		return fmt.Errorf("ProotSandbox requires an image path (used as root directory)")
 	}
 
 	rootFS, err := prepareRootFSFn(rootPath)
@@ -53,40 +57,31 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 		}
 	}
 
+	// proot -r realRoot [-b host:guest ...] cmdArgs
+	prootArgs := []string{"-r", rootFS.dir}
+	var warnGit bool
+	for _, m := range script.Mounts {
+		if m.ReadOnly {
+			warnGit = true
+		}
+		prootArgs = append(prootArgs, "-b", fmt.Sprintf("%s:%s", m.HostPath, m.SandboxPath))
+	}
+	if warnGit {
+		if _, err := fmt.Fprintf(stderr, "warning: proot sandbox cannot protect .git from writes\n"); err != nil {
+			return err
+		}
+	}
+
+	prootArgs = append(prootArgs, cmdArgs...)
+
 	// Prepare the command
-	cmd := execCommand(cmdPath, cmdArgs[1:]...)
+	cmd := execCommand("proot", prootArgs...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	// Set SysProcAttr for chroot.
-	// The workload must not inherit our euid 0 / CAP_SYS_CHROOT or it can
-	// trivially double-chroot back out to the host root. Put it in its own
-	// user + mount namespace mapped to a non-root in-namespace uid: the
-	// pre-exec child still holds CAP_SYS_CHROOT in the new ns (so the
-	// Chroot below succeeds), but execve() with a non-zero euid drops all
-	// capabilities, so the workload itself cannot chroot(2) again.
-	const sandboxID = 65534
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Chroot:     rootFS.dir,
-		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWIPC,
-		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: sandboxID, HostID: os.Getuid(), Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: sandboxID, HostID: os.Getgid(), Size: 1},
-		},
-		GidMappingsEnableSetgroups: false,
-	}
-
 	// We start at root of the new root
 	cmd.Dir = "/"
-
-	// We are not handling mounts here yet.
-	// Issue says: "leave a lot of functionality not supported"
-	if len(script.Mounts) > 0 {
-		return fmt.Errorf("mounts are not supported in chroot sandbox")
-	}
 
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 
@@ -94,7 +89,7 @@ func (s *ChrootSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Sc
 		if exitError, ok := err.(*exec.ExitError); ok {
 			return newExitError(exitError.ExitCode())
 		}
-		return fmt.Errorf("error running chroot command: %w", err)
+		return fmt.Errorf("error running proot command: %w", err)
 	}
 
 	return nil

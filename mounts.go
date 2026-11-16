@@ -15,232 +15,19 @@
 package main
 
 import (
-	"archive/tar"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/gke-labs/clix/sandbox"
 	"github.com/google/go-containerregistry/pkg/crane"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
-// Sandbox is the interface implemented by all our sandboxing technologies (docker, chroot etc)
-type Sandbox interface {
-	// Run executes the container image defined by script
-	Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error
-}
-
-// ExitError indicates that the executed tool exited with a non-zero exit code.
-type ExitError struct {
-	exitCode int
-}
-
-func (e *ExitError) Error() string {
-	return fmt.Sprintf("exit status %d", e.exitCode)
-}
-
-func (e *ExitError) ExitCode() int {
-	return e.exitCode
-}
-
-func newExitError(exitCode int) *ExitError {
-	return &ExitError{exitCode: exitCode}
-}
-
-type preparedRootFS struct {
-	dir     string
-	env     []string
-	cleanup func()
-}
-
-func imageEnv(img v1.Image) ([]string, error) {
-	cf, err := img.ConfigFile()
-	if err != nil {
-		return nil, fmt.Errorf("reading image config: %w", err)
-	}
-	if cf == nil {
-		return nil, nil
-	}
-	return cf.Config.Env, nil
-}
-
-func prepareRootFS(imageRef string) (*preparedRootFS, error) {
-	// Assume it is a container image
-	img, err := crane.Pull(imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
-	}
-
-	env, err := imageEnv(img)
-	if err != nil {
-		return nil, err
-	}
-
-	tmpDir, err := os.MkdirTemp("", "clix-chroot-*")
-	if err != nil {
-		return nil, err
-	}
-	cleanup := func() {
-		if err := os.RemoveAll(tmpDir); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to remove temp dir %s: %v\n", tmpDir, err)
-		}
-	}
-
-	// Export to tar stream
-	pr, pw := io.Pipe()
-	go func() {
-		err := crane.Export(img, pw)
-		pw.CloseWithError(err)
-	}()
-
-	if err := untar(pr, tmpDir); err != nil {
-		cleanup()
-		return nil, fmt.Errorf("unpacking image: %w", err)
-	}
-
-	return &preparedRootFS{
-		dir:     tmpDir,
-		env:     env,
-		cleanup: cleanup,
-	}, nil
-}
-
-var prepareRootFSFn = prepareRootFS
-
-func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
-	var order []string
-	envMap := make(map[string]string)
-	set := func(name, value string) {
-		if name == "" {
-			return
-		}
-		if _, exists := envMap[name]; !exists {
-			order = append(order, name)
-		}
-		envMap[name] = value
-	}
-
-	set("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	set("HOME", "/root")
-	if term := os.Getenv("TERM"); term != "" {
-		set("TERM", term)
-	}
-
-	for _, entry := range imageEnv {
-		name, value, _ := strings.Cut(entry, "=")
-		set(name, value)
-	}
-
-	for _, env := range scriptEnv {
-		set(env.Name, env.Value)
-	}
-
-	result := make([]string, 0, len(order))
-	for _, name := range order {
-		result = append(result, name+"="+envMap[name])
-	}
-	return result
-}
-
-func untar(r io.Reader, dest string) (retErr error) {
-	root, err := os.OpenRoot(dest)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil && retErr == nil {
-			retErr = closeErr
-		}
-	}()
-
-	tr := tar.NewReader(r)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		name := strings.TrimPrefix(header.Name, "./")
-		name = strings.TrimPrefix(name, "/")
-		if name == "" || name == "." {
-			continue
-		}
-		if !filepath.IsLocal(name) {
-			return fmt.Errorf("illegal entry name %q", header.Name)
-		}
-
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := extractDir(root, name); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := extractReg(root, name, header, tr); err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			if err := extractSymlink(root, name, header); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func removeNonDir(root *os.Root, name string) error {
-	fi, err := root.Lstat(name)
-	if err == nil {
-		if !fi.IsDir() {
-			return root.Remove(name)
-		}
-		return nil
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-func extractDir(root *os.Root, name string) error {
-	return root.MkdirAll(name, 0755)
-}
-
-func extractReg(root *os.Root, name string, header *tar.Header, r io.Reader) error {
-	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
-		return err
-	}
-	if err := removeNonDir(root, name); err != nil {
-		return err
-	}
-	perm := header.FileInfo().Mode().Perm()
-	f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(f, r)
-	chmodErr := f.Chmod(perm)
-	closeErr := f.Close()
-	return errors.Join(copyErr, chmodErr, closeErr)
-}
-
-func extractSymlink(root *os.Root, name string, header *tar.Header) error {
-	if err := root.MkdirAll(filepath.Dir(name), 0755); err != nil {
-		return err
-	}
-	if err := removeNonDir(root, name); err != nil {
-		return err
-	}
-	return root.Symlink(header.Linkname, name)
-}
-
-func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) {
-	var resolved []Mount
+func resolveMounts(mounts []sandbox.Mount, imageSHA, scriptKey string) ([]sandbox.Mount, error) {
+	var resolved []sandbox.Mount
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -307,7 +94,7 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 
 		resolved = append(resolved, m)
 		if isRepoRoot {
-			gitMount := Mount{
+			gitMount := sandbox.Mount{
 				HostPath:         filepath.Join(m.HostPath, ".git"),
 				SandboxPath:      filepath.Join(m.SandboxPath, ".git"),
 				ReadOnly:         true,
@@ -322,7 +109,7 @@ func resolveMounts(mounts []Mount, imageSHA, scriptKey string) ([]Mount, error) 
 	return resolved, nil
 }
 
-func resolveScriptMounts(mounts []Mount, sandboxType, image, scriptKey string) ([]Mount, error) {
+func resolveScriptMounts(mounts []sandbox.Mount, sandboxType, image, scriptKey string) ([]sandbox.Mount, error) {
 	imageSHA := ""
 	needsSHA := false
 	for _, mount := range mounts {
@@ -352,7 +139,7 @@ func resolveScriptMounts(mounts []Mount, sandboxType, image, scriptKey string) (
 	return resolveMounts(mounts, imageSHA, scriptKey)
 }
 
-func validateMount(m Mount, origHostPath, cacheDir string) error {
+func validateMount(m sandbox.Mount, origHostPath, cacheDir string) error {
 	if !filepath.IsAbs(m.HostPath) {
 		return fmt.Errorf("mount %q: host path is not absolute", origHostPath)
 	}
@@ -392,4 +179,99 @@ func findGitRoot(path string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+var getImageSHAFn = getImageSHA
+
+func getImageSHA(image string) (string, error) {
+	log(2, "Getting SHA for image: %s", image)
+	cmd := execCommand("docker", "images", "--no-trunc", "--quiet", image)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error running docker images: %w", err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		log(1, "Image %s not found locally, pulling...", image)
+		// Try pulling it
+		pullCmd := execCommand("docker", "pull", image)
+		pullCmd.Stdout = os.Stderr
+		pullCmd.Stderr = os.Stderr
+		if err := pullCmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to pull image %s: %w", image, err)
+		}
+		// Try again
+		cmd = execCommand("docker", "images", "--no-trunc", "--quiet", image)
+		out, err = cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("error running docker images after pull: %w", err)
+		}
+		sha = strings.TrimSpace(string(out))
+	}
+
+	if sha == "" {
+		return "", fmt.Errorf("image still not found after pull: %s", image)
+	}
+
+	// sha is like "sha256:..."
+	if strings.HasPrefix(sha, "sha256:") {
+		sha = sha[7:]
+	}
+	log(2, "Image SHA for %s is %s", image, sha)
+	return sha, nil
+}
+
+var getAppleContainerImageSHAFn = getAppleContainerImageSHA
+
+func getAppleContainerImageSHA(image string) (string, error) {
+	// For apple/container we try to get the image digest using "inspect"
+	cmd := execCommand("container", "image", "inspect", image)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("error running container image inspect: %w", err)
+	}
+
+	// The output is a JSON array.
+	// We expect a descriptor or index with a digest.
+	var info []struct {
+		Descriptor struct {
+			Digest string `json:"digest"`
+		} `json:"descriptor"`
+		Index struct {
+			Digest string `json:"digest"`
+		} `json:"index"`
+	}
+
+	if err := json.Unmarshal(out, &info); err != nil {
+		// If unmarshalling fails, try to just return the image name as hash (not ideal but better than nothing)
+		return "", fmt.Errorf("failed to parse container image inspect output: %w", err)
+	}
+
+	if len(info) == 0 {
+		return "", fmt.Errorf("no image info found in container image inspect output")
+	}
+
+	digest := info[0].Descriptor.Digest
+	if digest == "" {
+		digest = info[0].Index.Digest
+	}
+	// Digest is likely like "sha256:..."
+	if strings.HasPrefix(digest, "sha256:") {
+		digest = digest[7:]
+	}
+	return digest, nil
+}
+
+var getProotImageSHAFn = getProotImageSHA
+
+func getProotImageSHA(imageRef string) (string, error) {
+	image, err := crane.Pull(imageRef)
+	if err != nil {
+		return "", fmt.Errorf("pulling image %q: %w", imageRef, err)
+	}
+	digest, err := image.Digest()
+	if err != nil {
+		return "", fmt.Errorf("getting image digest: %w", err)
+	}
+	return digest.Hex, nil
 }

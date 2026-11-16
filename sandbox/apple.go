@@ -12,20 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package sandbox
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 )
 
 type AppleContainerSandbox struct{}
 
-func (s *AppleContainerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Script, args []string) error {
+func (s *AppleContainerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	cmdArgs, err := buildAppleContainerArgs(script, args, isTerminal(stdin))
 	if err != nil {
 		return fmt.Errorf("error building apple/container args: %w", err)
@@ -45,7 +43,7 @@ func (s *AppleContainerSandbox) Run(stdin io.Reader, stdout, stderr io.Writer, s
 	return nil
 }
 
-func buildAppleContainerArgs(script Script, args []string, isTerm bool) ([]string, error) {
+func buildAppleContainerArgs(script Config, args []string, isTerm bool) ([]string, error) {
 	cmdArgs := []string{"run", "--rm"}
 	if isTerm {
 		cmdArgs = append(cmdArgs, "-it")
@@ -77,45 +75,4 @@ func buildAppleContainerArgs(script Script, args []string, isTerm bool) ([]strin
 	cmdArgs = append(cmdArgs, args...)
 
 	return cmdArgs, nil
-}
-
-var getAppleContainerImageSHAFn = getAppleContainerImageSHA
-
-func getAppleContainerImageSHA(image string) (string, error) {
-	// For apple/container we try to get the image digest using "inspect"
-	cmd := execCommand("container", "image", "inspect", image)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("error running container image inspect: %w", err)
-	}
-
-	// The output is a JSON array.
-	// We expect a descriptor or index with a digest.
-	var info []struct {
-		Descriptor struct {
-			Digest string `json:"digest"`
-		} `json:"descriptor"`
-		Index struct {
-			Digest string `json:"digest"`
-		} `json:"index"`
-	}
-
-	if err := json.Unmarshal(out, &info); err != nil {
-		// If unmarshalling fails, try to just return the image name as hash (not ideal but better than nothing)
-		return "", fmt.Errorf("failed to parse container image inspect output: %w", err)
-	}
-
-	if len(info) == 0 {
-		return "", fmt.Errorf("no image info found in container image inspect output")
-	}
-
-	digest := info[0].Descriptor.Digest
-	if digest == "" {
-		digest = info[0].Index.Digest
-	}
-	// Digest is likely like "sha256:..."
-	if strings.HasPrefix(digest, "sha256:") {
-		digest = digest[7:]
-	}
-	return digest, nil
 }
