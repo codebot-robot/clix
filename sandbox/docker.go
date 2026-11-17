@@ -15,25 +15,36 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/term"
 )
+
+var dockerStopTimeout = 10 * time.Second
 
 type dockerSandbox struct{}
 
 func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(2).Info("DockerSandbox: preparing args")
+	containerName, err := generateContainerNameFunction()
+	if err != nil {
+		return err
+	}
 	cmdArgs, err := buildDockerArgs(script, args, isTerminal(stdin))
 	if err != nil {
 		return err
 	}
+	cmdArgs = append([]string{"run", "--name", containerName}, cmdArgs[1:]...)
 
 	logger.V(1).Info(fmt.Sprintf("DockerSandbox: running docker %v", cmdArgs))
 	cmd := execCommand("docker", cmdArgs...)
@@ -41,13 +52,51 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	if err := cmd.Run(); err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			return newExitError(exitError.ExitCode())
+	stopAction := func() error {
+		var killError error
+		if cmd.Process != nil {
+			if processKillError := cmd.Process.Kill(); processKillError != nil && !errors.Is(processKillError, os.ErrProcessDone) && !errors.Is(processKillError, syscall.ESRCH) {
+				killError = processKillError
+			}
 		}
-		return fmt.Errorf("error running docker command: %w", err)
+		stopError := stopDockerContainer(containerName)
+		return errors.Join(killError, stopError)
 	}
-	return nil
+
+	return runCommand(ctx, "docker", cmd, stopAction)
+}
+
+func stopDockerContainer(containerName string) error {
+	stopCommand := execCommand("docker", "rm", "-f", containerName)
+	var output bytes.Buffer
+	stopCommand.Stdout = &output
+	stopCommand.Stderr = &output
+	if err := stopCommand.Start(); err != nil {
+		return fmt.Errorf("failed to stop container %s (remove with 'docker rm -f %s'): %w", containerName, containerName, err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- stopCommand.Wait()
+	}()
+
+	select {
+	case err := <-stopDone:
+		if err != nil && !strings.Contains(output.String(), "No such container") && !strings.Contains(output.String(), "is already in progress") {
+			return fmt.Errorf("failed to stop container %s (remove with 'docker rm -f %s'): %w", containerName, containerName, err)
+		}
+		return nil
+	case <-time.After(dockerStopTimeout):
+		var killError error
+		if stopCommand.Process != nil {
+			if processKillError := stopCommand.Process.Kill(); processKillError != nil && !errors.Is(processKillError, os.ErrProcessDone) && !errors.Is(processKillError, syscall.ESRCH) {
+				killError = processKillError
+			}
+		}
+		<-stopDone
+		timeoutError := fmt.Errorf("failed to stop container %s within %v (remove with 'docker rm -f %s')", containerName, dockerStopTimeout, containerName)
+		return errors.Join(timeoutError, killError)
+	}
 }
 
 func buildDockerArgs(script Config, args []string, terminal bool) ([]string, error) {

@@ -16,10 +16,14 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildDockerArgs(t *testing.T) {
@@ -191,4 +195,239 @@ func TestBackendExitError(t *testing.T) {
 			t.Errorf("expected exit code 42, got %d", exitError.ExitCode())
 		}
 	})
+}
+
+func assertRunCancelled(t *testing.T, runFunction func(ctx context.Context) error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- runFunction(ctx)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatalf("expected error from cancelled Run, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected error wrapping context.Canceled, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Run did not return promptly after context cancellation")
+	}
+}
+
+func TestDockerContextCancelled(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker binary not found")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("docker daemon not accessible")
+	}
+
+	testContainerName := "clix-test-cancel-" + strings.ToLower(t.Name())
+	oldGenerateContainerNameFunction := generateContainerNameFunction
+	defer func() { generateContainerNameFunction = oldGenerateContainerNameFunction }()
+	generateContainerNameFunction = func() (string, error) {
+		return testContainerName, nil
+	}
+
+	_ = exec.Command("docker", "rm", "-f", testContainerName).Run()
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", testContainerName).Run()
+	}()
+
+	backend := &dockerSandbox{}
+	script := Config{Image: "alpine"}
+	ctx, cancel := context.WithCancel(t.Context())
+
+	runDone := make(chan error, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep", "60"})
+	}()
+
+	deadline := time.Now().Add(30 * time.Second)
+	containerRunning := false
+	for time.Now().Before(deadline) {
+		output, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", testContainerName).Output()
+		if err == nil && strings.TrimSpace(string(output)) == "true" {
+			containerRunning = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !containerRunning {
+		t.Fatalf("timed out waiting for container %s to start running", testContainerName)
+	}
+
+	cancel()
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatalf("expected error from cancelled Run, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected error wrapping context.Canceled, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Run did not return within 5 seconds of context cancellation")
+	}
+
+	output, err := exec.Command("docker", "ps", "-a", "--filter", "name="+testContainerName, "--format", "{{.Names}}").Output()
+	if err != nil {
+		t.Fatalf("failed to query docker ps: %v", err)
+	}
+	if strings.Contains(string(output), testContainerName) {
+		t.Errorf("expected container %s to be gone, but found in docker ps: %s", testContainerName, string(output))
+	}
+}
+
+func TestBackendContextCancelledMock(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+	t.Setenv("MOCK_BEHAVIOR", "sleep")
+
+	oldPrepareRootFSFunction := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepareRootFSFunction }()
+	prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+		return &preparedRootFS{
+			dir:     t.TempDir(),
+			cleanup: func() {},
+		}, nil
+	}
+
+	env := []EnvVar{
+		{Name: "GO_WANT_HELPER_PROCESS", Value: "1"},
+		{Name: "MOCK_BEHAVIOR", Value: "sleep"},
+	}
+	tests := []struct {
+		name    string
+		backend Sandbox
+		config  Config
+	}{
+		{name: "Docker", backend: &dockerSandbox{}, config: Config{Image: "alpine", Env: env}},
+		{name: "AppleContainer", backend: &appleContainerSandbox{}, config: Config{Image: "alpine", Env: env}},
+		{name: "Proot", backend: &prootSandbox{}, config: Config{Image: "alpine", Entrypoint: "/bin/sleep", Env: env}},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			assertRunCancelled(t, func(ctx context.Context) error {
+				var stdout, stderr bytes.Buffer
+				return testCase.backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, testCase.config, []string{"sleep"})
+			})
+		})
+	}
+}
+
+func TestDockerStopFailureReported(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+	t.Setenv("MOCK_BEHAVIOR", "docker_rm_error")
+
+	testContainerName := "clix-test-stop-failure"
+	oldGenerateContainerNameFunction := generateContainerNameFunction
+	defer func() { generateContainerNameFunction = oldGenerateContainerNameFunction }()
+	generateContainerNameFunction = func() (string, error) {
+		return testContainerName, nil
+	}
+
+	backend := &dockerSandbox{}
+	script := Config{Image: "alpine"}
+	ctx, cancel := context.WithCancel(t.Context())
+
+	runDone := make(chan error, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep"})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatalf("expected error from cancelled Run with stop failure, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected error wrapping context.Canceled, got %v", err)
+		}
+		expectedMessage := fmt.Sprintf("failed to stop container %s (remove with 'docker rm -f %s')", testContainerName, testContainerName)
+		if !strings.Contains(err.Error(), expectedMessage) {
+			t.Errorf("expected error to contain %q, got %q", expectedMessage, err.Error())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Run did not return promptly after context cancellation")
+	}
+}
+
+func TestDockerStopTimeoutReported(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+	t.Setenv("MOCK_BEHAVIOR", "docker_rm_hang")
+
+	oldStopTimeout := dockerStopTimeout
+	defer func() { dockerStopTimeout = oldStopTimeout }()
+	dockerStopTimeout = 100 * time.Millisecond
+
+	testContainerName := "clix-test-stop-timeout"
+	oldGenerateContainerNameFunction := generateContainerNameFunction
+	defer func() { generateContainerNameFunction = oldGenerateContainerNameFunction }()
+	generateContainerNameFunction = func() (string, error) {
+		return testContainerName, nil
+	}
+
+	backend := &dockerSandbox{}
+	script := Config{Image: "alpine"}
+	ctx, cancel := context.WithCancel(t.Context())
+
+	runDone := make(chan error, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep"})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatalf("expected error from cancelled Run with stop timeout, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected error wrapping context.Canceled, got %v", err)
+		}
+		expectedMessage := fmt.Sprintf("failed to stop container %s within %v (remove with 'docker rm -f %s')", testContainerName, dockerStopTimeout, testContainerName)
+		if !strings.Contains(err.Error(), expectedMessage) {
+			t.Errorf("expected error to contain %q, got %q", expectedMessage, err.Error())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Run did not return promptly after context cancellation")
+	}
+}
+
+func TestContextAlreadyCancelledBeforeRun(t *testing.T) {
+	backend := &dockerSandbox{}
+	script := Config{Image: "alpine"}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var stdout, stderr bytes.Buffer
+	err := backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep"})
+	if err == nil {
+		t.Fatalf("expected error from cancelled context before run, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected error wrapping context.Canceled, got %v", err)
+	}
 }

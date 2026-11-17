@@ -19,13 +19,16 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"syscall"
 )
 
 type chrootSandbox struct{}
 
 func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
 	if script.Network != "" {
 		return fmt.Errorf("network isolation is not supported by the chroot sandbox")
 	}
@@ -92,13 +95,13 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	cmd.Dir = "/"
 
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
+	// Only move to a new process group when stdin is not a terminal: a process
+	// outside the foreground group is stopped when reading the terminal and
+	// misses Ctrl-C, so interactive runs keep the caller's group (with the
+	// trade-off that cancellation kills only the direct process).
+	setupProcessGroup(cmd, stdin)
 
-	if err := cmd.Run(); err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			return newExitError(exitError.ExitCode())
-		}
-		return fmt.Errorf("error running chroot command: %w", err)
-	}
-
-	return nil
+	return runCommand(ctx, "chroot", cmd, func() error {
+		return killProcessTree(cmd)
+	})
 }

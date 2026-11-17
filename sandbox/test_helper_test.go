@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 // fakeExecCommand mocks exec.Command for testing.
@@ -52,6 +53,43 @@ func TestHelperProcess(t *testing.T) {
 	behavior := os.Getenv("MOCK_BEHAVIOR")
 	if behavior == "exit_42" {
 		os.Exit(42)
+	}
+	if behavior == "sleep" {
+		if cmd == "docker" && len(args) > 1 && args[1] == "rm" {
+			os.Exit(0)
+		}
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	if behavior == "docker_rm_error" {
+		if cmd == "docker" && len(args) > 1 && args[1] == "rm" {
+			fmt.Fprintf(os.Stderr, "daemon error: cannot stop container\n")
+			os.Exit(1)
+		}
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	if behavior == "docker_rm_hang" {
+		if cmd == "docker" && len(args) > 1 && args[1] == "rm" {
+			time.Sleep(30 * time.Second)
+			os.Exit(0)
+		}
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	if behavior == "spawn_grandchild" {
+		grandchild := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--", "grandchild")
+		grandchild.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "MOCK_BEHAVIOR=sleep")
+		if err := grandchild.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start grandchild: %v\n", err)
+			os.Exit(1)
+		}
+		pidFile := os.Getenv("GRANDCHILD_PID_FILE")
+		if pidFile != "" {
+			_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", grandchild.Process.Pid)), 0644)
+		}
+		_ = grandchild.Wait()
+		os.Exit(0)
 	}
 
 	switch cmd {

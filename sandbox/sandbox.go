@@ -17,6 +17,8 @@ package sandbox
 import (
 	"archive/tar"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-containerregistry/pkg/crane"
@@ -353,4 +356,84 @@ func extractSymlink(root *os.Root, name string, header *tar.Header) error {
 		return err
 	}
 	return root.Symlink(header.Linkname, name)
+}
+
+func generateContainerName() (string, error) {
+	randomBytes := make([]byte, 16)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("generating container name: %w", err)
+	}
+	return "clix-" + hex.EncodeToString(randomBytes), nil
+}
+
+var generateContainerNameFunction = generateContainerName
+
+func killProcessTree(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	processID := cmd.Process.Pid
+	var killError error
+	if processID > 0 && hasProcessGroup(cmd) {
+		killError = killProcessGroup(processID)
+	}
+	if processKillError := cmd.Process.Kill(); processKillError != nil && !errors.Is(processKillError, os.ErrProcessDone) && !errors.Is(processKillError, syscall.ESRCH) {
+		killError = errors.Join(killError, processKillError)
+	}
+	if killError != nil {
+		if hasProcessGroup(cmd) {
+			return fmt.Errorf("failed to stop process group %d (kill with 'kill -9 -%d'): %w", processID, processID, killError)
+		}
+		return fmt.Errorf("failed to stop process %d (kill with 'kill -9 %d'): %w", processID, processID, killError)
+	}
+	return nil
+}
+
+func runCommand(ctx context.Context, backendName string, cmd *exec.Cmd, stopAction func() error) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("error starting %s command: %w", backendName, err)
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitDone:
+		if ctx.Err() != nil {
+			if stopAction != nil {
+				if stopError := stopAction(); stopError != nil {
+					return fmt.Errorf("%w: %w", stopError, ctx.Err())
+				}
+			}
+			return fmt.Errorf("command cancelled: %w", ctx.Err())
+		}
+		if err != nil {
+			if exitError, ok := err.(*exec.ExitError); ok {
+				return newExitError(exitError.ExitCode())
+			}
+			return fmt.Errorf("error running %s command: %w", backendName, err)
+		}
+		return nil
+
+	case <-ctx.Done():
+		var stopError error
+		if stopAction != nil {
+			stopError = stopAction()
+		} else if cmd.Process != nil {
+			if processKillError := cmd.Process.Kill(); processKillError != nil && !errors.Is(processKillError, os.ErrProcessDone) && !errors.Is(processKillError, syscall.ESRCH) {
+				stopError = processKillError
+			}
+		}
+		<-waitDone
+		if stopError != nil {
+			return fmt.Errorf("%w: %w", stopError, ctx.Err())
+		}
+		return fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
 }

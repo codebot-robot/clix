@@ -65,6 +65,11 @@ func TestLibraryExportedSurface(t *testing.T) {
 		t.Fatalf("failed to read arguments file: %v", err)
 	}
 	actualArguments := strings.Split(strings.TrimSpace(string(argumentsContent)), "\n")
+	nameIndex := slices.Index(actualArguments, "--name")
+	if nameIndex == -1 || nameIndex+1 >= len(actualArguments) || !strings.HasPrefix(actualArguments[nameIndex+1], "clix-") {
+		t.Fatalf("expected --name clix-..., got %v", actualArguments)
+	}
+	actualArguments = append(actualArguments[:nameIndex], actualArguments[nameIndex+2:]...)
 	expectedArguments := []string{
 		"run", "--rm", "-i",
 		"-v", "/host/path:/sandbox/path:ro",
