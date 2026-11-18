@@ -19,7 +19,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -429,5 +431,55 @@ func TestContextAlreadyCancelledBeforeRun(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected error wrapping context.Canceled, got %v", err)
+	}
+}
+
+func TestDockerRunsGivenExecutableInsteadOfPath(t *testing.T) {
+	// Create a decoy "docker" in PATH that creates a marker and fails if executed.
+	pathDirectory := t.TempDir()
+	decoyMarkerFile := filepath.Join(pathDirectory, "decoy_executed.txt")
+	decoyScript := fmt.Sprintf("#!/bin/sh\necho decoy > %s\nexit 1\n", decoyMarkerFile)
+	decoyDockerPath := filepath.Join(pathDirectory, "docker")
+	if err := os.WriteFile(decoyDockerPath, []byte(decoyScript), 0755); err != nil {
+		t.Fatalf("failed to write decoy docker script: %v", err)
+	}
+	t.Setenv("PATH", pathDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Create a custom executable outside of PATH.
+	customDirectory := t.TempDir()
+	argumentsFile := filepath.Join(customDirectory, "arguments.txt")
+	customDockerScript := fmt.Sprintf("#!/bin/sh\nfor argument in \"$@\"; do\n  echo \"$argument\"\ndone > %s\nexit 0\n", argumentsFile)
+	customDockerPath := filepath.Join(customDirectory, "custom-docker")
+	if err := os.WriteFile(customDockerPath, []byte(customDockerScript), 0755); err != nil {
+		t.Fatalf("failed to write custom docker script: %v", err)
+	}
+
+	backend, err := New("docker", WithExecutable("docker", customDockerPath))
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	config := Config{
+		Image: "alpine:latest",
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hello"}); err != nil {
+		t.Fatalf("backend.Run failed: %v", err)
+	}
+
+	// Verify that the decoy docker on PATH was NOT executed.
+	if _, err := os.Stat(decoyMarkerFile); !os.IsNotExist(err) {
+		t.Fatalf("decoy docker on PATH was executed instead of custom executable")
+	}
+
+	// Verify that the custom executable was executed.
+	argumentsContent, err := os.ReadFile(argumentsFile)
+	if err != nil {
+		t.Fatalf("failed to read arguments file: %v", err)
+	}
+	actualArguments := strings.Split(strings.TrimSpace(string(argumentsContent)), "\n")
+	if len(actualArguments) == 0 || actualArguments[0] != "run" {
+		t.Errorf("expected custom executable to receive docker run arguments, got %v", actualArguments)
 	}
 }

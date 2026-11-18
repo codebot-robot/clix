@@ -21,7 +21,9 @@ import (
 	"os"
 )
 
-type appleContainerSandbox struct{}
+type appleContainerSandbox struct {
+	executable string
+}
 
 func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	if err := ctx.Err(); err != nil {
@@ -38,7 +40,12 @@ func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout
 		return err
 	}
 
-	cmd := execCommand("container", cmdArgs...)
+	executable := s.executable
+	if executable == "" {
+		executable = "container"
+	}
+
+	cmd := execCommand(executable, cmdArgs...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

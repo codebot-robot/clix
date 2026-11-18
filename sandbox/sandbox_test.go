@@ -546,3 +546,78 @@ func TestMountValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestWithExecutableBackends(t *testing.T) {
+	oldPrepareRootFS := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+	prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+		return &preparedRootFS{dir: t.TempDir(), cleanup: func() {}}, nil
+	}
+
+	runBackend := func(t *testing.T, backend Sandbox) string {
+		t.Helper()
+		var executedCommand string
+		oldExecCommand := execCommand
+		defer func() { execCommand = oldExecCommand }()
+		execCommand = func(name string, args ...string) *exec.Cmd {
+			executedCommand = name
+			return fakeExecCommand(name, args...)
+		}
+		var stdout, stderr bytes.Buffer
+		if err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, Config{Image: "alpine"}, []string{"echo"}); err != nil {
+			t.Fatalf("backend.Run failed: %v", err)
+		}
+		return executedCommand
+	}
+
+	for _, backendName := range []string{"", "docker", "apple-container", "proot"} {
+		testName := backendName
+		if testName == "" {
+			testName = "default"
+		}
+		t.Run(testName, func(t *testing.T) {
+			targetBackend := backendName
+			if targetBackend == "" {
+				targetBackend = "docker"
+			}
+			customPath := "/custom/bin/" + targetBackend
+			backend, err := New(backendName, WithExecutable(targetBackend, customPath))
+			if err != nil {
+				t.Fatalf("New failed: %v", err)
+			}
+			if executed := runBackend(t, backend); executed != customPath {
+				t.Errorf("got executed command %q, want %q", executed, customPath)
+			}
+		})
+	}
+
+	t.Run("OptionForDifferentBackendIgnored", func(t *testing.T) {
+		backend, err := New("docker", WithExecutable("proot", "/custom/bin/proot"))
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		if executed := runBackend(t, backend); executed != "docker" {
+			t.Errorf("expected default docker executable, got %q", executed)
+		}
+	})
+
+	t.Run("MultipleBackendOptionsProvided", func(t *testing.T) {
+		backend, err := New("proot",
+			WithExecutable("docker", "/custom/bin/docker"),
+			WithExecutable("proot", "/custom/bin/proot"),
+		)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		if executed := runBackend(t, backend); executed != "/custom/bin/proot" {
+			t.Errorf("expected proot executable from multiple options, got %q", executed)
+		}
+	})
+
+	t.Run("ChrootIgnoresExecutableOption", func(t *testing.T) {
+		backend, err := New("chroot", WithExecutable("docker", "/custom/bin/docker"))
+		if err != nil || backend == nil {
+			t.Fatalf("expected chroot to ignore executable option, got err: %v", err)
+		}
+	})
+}

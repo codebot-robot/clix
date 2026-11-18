@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -49,20 +50,21 @@ func TestHelperProcess(t *testing.T) {
 	}
 
 	cmd, _ := args[0], args[1:]
+	baseCommand := filepath.Base(cmd)
 
 	behavior := os.Getenv("MOCK_BEHAVIOR")
 	if behavior == "exit_42" {
 		os.Exit(42)
 	}
 	if behavior == "sleep" {
-		if cmd == "docker" && len(args) > 1 && args[1] == "rm" {
+		if (cmd == "docker" || baseCommand == "docker") && len(args) > 1 && args[1] == "rm" {
 			os.Exit(0)
 		}
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	}
 	if behavior == "docker_rm_error" {
-		if cmd == "docker" && len(args) > 1 && args[1] == "rm" {
+		if (cmd == "docker" || baseCommand == "docker") && len(args) > 1 && args[1] == "rm" {
 			fmt.Fprintf(os.Stderr, "daemon error: cannot stop container\n")
 			os.Exit(1)
 		}
@@ -70,7 +72,7 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	if behavior == "docker_rm_hang" {
-		if cmd == "docker" && len(args) > 1 && args[1] == "rm" {
+		if (cmd == "docker" || baseCommand == "docker") && len(args) > 1 && args[1] == "rm" {
 			time.Sleep(30 * time.Second)
 			os.Exit(0)
 		}
