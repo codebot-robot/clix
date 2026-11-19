@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -298,6 +299,117 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 			t.Errorf("got %v, want %v", capturedArgs, expected)
 		}
 	})
+}
+
+func TestBackendArgumentsNoEntrypoint(t *testing.T) {
+	script := Config{
+		Image: "my-image:v1",
+	}
+	expectedCommandLine := []string{"/bin/mytool", "run", "--flag"}
+
+	oldPrepareRootFS := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+	prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+		return &preparedRootFS{
+			dir:        "/mock/rootfs",
+			entrypoint: []string{"/bin/mytool"},
+			cmd:        []string{"run", "--flag"},
+			workingDir: "/app",
+			cleanup:    func() {},
+		}, nil
+	}
+
+	t.Run("Docker", func(t *testing.T) {
+		cmdArgs, err := buildDockerArgs(script, nil, false)
+		if err != nil {
+			t.Fatalf("buildDockerArgs failed: %v", err)
+		}
+		if slices.Contains(cmdArgs, "--entrypoint") {
+			t.Errorf("expected no --entrypoint in docker args, got %v", cmdArgs)
+		}
+		if cmdArgs[len(cmdArgs)-1] != "my-image:v1" {
+			t.Errorf("expected image to be final docker arg, got %v", cmdArgs)
+		}
+	})
+
+	t.Run("Proot", func(t *testing.T) {
+		var capturedArgs []string
+		oldExecCommand := execCommand
+		defer func() { execCommand = oldExecCommand }()
+		execCommand = func(name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return fakeExecCommand(name, args...)
+		}
+
+		sandbox := &prootSandbox{}
+		var stdout, stderr bytes.Buffer
+		if err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, nil); err != nil {
+			t.Fatalf("sandbox.Run failed: %v", err)
+		}
+		expected := append([]string{"-r", "/mock/rootfs", "-w", "/app"}, expectedCommandLine...)
+		if !slices.Equal(capturedArgs, expected) {
+			t.Errorf("got %v, want %v", capturedArgs, expected)
+		}
+	})
+
+	t.Run("Chroot", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("skipping chroot test on non-linux platform")
+		}
+		oldRunCommand := runCommandFunction
+		defer func() { runCommandFunction = oldRunCommand }()
+		var capturedCommand *exec.Cmd
+		runCommandFunction = func(ctx context.Context, backendName string, cmd *exec.Cmd, stopAction func() error) error {
+			capturedCommand = cmd
+			return nil
+		}
+
+		sandbox := &chrootSandbox{}
+		var stdout, stderr bytes.Buffer
+		if err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, nil); err != nil {
+			t.Fatalf("sandbox.Run failed: %v", err)
+		}
+		if capturedCommand == nil || !slices.Equal(capturedCommand.Args, expectedCommandLine) {
+			t.Errorf("got args %v, want %v", capturedCommand.Args, expectedCommandLine)
+		}
+		if capturedCommand.Dir != "/app" {
+			t.Errorf("got cmd.Dir %q, want %q", capturedCommand.Dir, "/app")
+		}
+	})
+}
+
+func TestResolveRootFSCommand(t *testing.T) {
+	testCases := []struct {
+		name              string
+		entrypoint        string
+		args              []string
+		rootFS            *preparedRootFS
+		expectedCommand   string
+		expectedArguments []string
+		expectedMessage   string
+	}{
+		{"ConfigEntrypointOverrides", "/bin/custom", []string{"a"}, &preparedRootFS{entrypoint: []string{"/bin/image"}}, "/bin/custom", []string{"/bin/custom", "a"}, ""},
+		{"ArgsProvideCommand", "", []string{"/bin/echo", "hi"}, &preparedRootFS{entrypoint: []string{"/bin/image"}}, "/bin/echo", []string{"/bin/echo", "hi"}, ""},
+		{"ImageEntrypointAndCmd", "", nil, &preparedRootFS{entrypoint: []string{"/bin/app"}, cmd: []string{"serve"}}, "/bin/app", []string{"/bin/app", "serve"}, ""},
+		{"ImageEntrypointOnly", "", nil, &preparedRootFS{entrypoint: []string{"/bin/app"}}, "/bin/app", []string{"/bin/app"}, ""},
+		{"ImageCmdOnly", "", nil, &preparedRootFS{cmd: []string{"/bin/sh"}}, "/bin/sh", []string{"/bin/sh"}, ""},
+		{"NoCommandAndNoEntrypoint", "", nil, &preparedRootFS{}, "", nil, "no command specified, no entrypoint in script, and no ENTRYPOINT or CMD in image"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			command, arguments, err := resolveRootFSCommand(testCase.entrypoint, testCase.args, testCase.rootFS)
+			if testCase.expectedMessage != "" {
+				if err == nil || !strings.Contains(err.Error(), testCase.expectedMessage) {
+					t.Fatalf("got err %v, want error containing %q", err, testCase.expectedMessage)
+				}
+				return
+			}
+			if err != nil || command != testCase.expectedCommand || !slices.Equal(arguments, testCase.expectedArguments) {
+				t.Fatalf("got (%q, %v, %v), want (%q, %v, nil)", command, arguments, err, testCase.expectedCommand, testCase.expectedArguments)
+			}
+		})
+	}
 }
 
 type recordingLogSink struct {

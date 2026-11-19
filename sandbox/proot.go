@@ -54,21 +54,9 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 	}
 	defer rootFS.cleanup()
 
-	// Determine the command to run
-	var cmdPath string
-	var cmdArgs []string
-
-	if script.Entrypoint != "" {
-		cmdPath = script.Entrypoint
-		cmdArgs = append([]string{cmdPath}, args...)
-	} else {
-		// If no entrypoint, use the first argument as command
-		if len(args) > 0 {
-			cmdPath = args[0]
-			cmdArgs = args
-		} else {
-			return fmt.Errorf("no command specified and no entrypoint in script")
-		}
+	_, cmdArgs, err := resolveRootFSCommand(script.Entrypoint, args, rootFS)
+	if err != nil {
+		return err
 	}
 
 	// proot -r realRoot [-b host:guest ...] cmdArgs
@@ -84,6 +72,10 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 		if _, err := fmt.Fprintf(stderr, "warning: proot sandbox cannot protect .git from writes\n"); err != nil {
 			return err
 		}
+	}
+
+	if rootFS.workingDir != "" {
+		prootArgs = append(prootArgs, "-w", rootFS.workingDir)
 	}
 
 	prootArgs = append(prootArgs, cmdArgs...)
@@ -109,7 +101,7 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 	// trade-off that cancellation kills only the direct process).
 	setupProcessGroup(cmd, stdin)
 
-	return runCommand(ctx, "proot", cmd, func() error {
+	return runCommandFunction(ctx, "proot", cmd, func() error {
 		return killProcessTree(cmd)
 	})
 }

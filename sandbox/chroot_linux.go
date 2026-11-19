@@ -48,21 +48,9 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	}
 	defer rootFS.cleanup()
 
-	// Determine the command to run
-	var cmdPath string
-	var cmdArgs []string
-
-	if script.Entrypoint != "" {
-		cmdPath = script.Entrypoint
-		cmdArgs = append([]string{cmdPath}, args...)
-	} else {
-		// If no entrypoint, use the first argument as command
-		if len(args) > 0 {
-			cmdPath = args[0]
-			cmdArgs = args
-		} else {
-			return fmt.Errorf("no command specified and no entrypoint in script")
-		}
+	cmdPath, cmdArgs, err := resolveRootFSCommand(script.Entrypoint, args, rootFS)
+	if err != nil {
+		return err
 	}
 
 	// Prepare the command
@@ -91,8 +79,11 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 		GidMappingsEnableSetgroups: false,
 	}
 
-	// We start at root of the new root
+	// We start at root of the new root, or the image's configured working directory.
 	cmd.Dir = "/"
+	if rootFS.workingDir != "" {
+		cmd.Dir = rootFS.workingDir
+	}
 
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
 	// Only move to a new process group when stdin is not a terminal: a process
@@ -101,7 +92,7 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	// trade-off that cancellation kills only the direct process).
 	setupProcessGroup(cmd, stdin)
 
-	return runCommand(ctx, "chroot", cmd, func() error {
+	return runCommandFunction(ctx, "chroot", cmd, func() error {
 		return killProcessTree(cmd)
 	})
 }

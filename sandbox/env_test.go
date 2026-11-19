@@ -93,20 +93,33 @@ func TestBuildSandboxEnv(t *testing.T) {
 	}
 }
 
-func TestImageEnv(t *testing.T) {
-	img, err := mutate.Config(empty.Image, v1.Config{
-		Env: []string{"A=1", "B=2"},
+func TestImageConfig(t *testing.T) {
+	image, err := mutate.Config(empty.Image, v1.Config{
+		Entrypoint: []string{"/bin/tool"},
+		Cmd:        []string{"run", "--flag"},
+		WorkingDir: "/app",
+		Env:        []string{"A=1", "B=2"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := imageEnv(img)
-	if err != nil || !slices.Equal(env, []string{"A=1", "B=2"}) {
-		t.Errorf("imageEnv with config: got %v, %v", env, err)
+
+	config, err := imageConfig(image)
+	if err != nil || config == nil {
+		t.Fatalf("imageConfig failed: %v", err)
+	}
+	if !slices.Equal(config.Entrypoint, []string{"/bin/tool"}) ||
+		!slices.Equal(config.Cmd, []string{"run", "--flag"}) ||
+		config.WorkingDir != "/app" ||
+		!slices.Equal(config.Env, []string{"A=1", "B=2"}) {
+		t.Errorf("unexpected config: %+v", config)
 	}
 
-	env, err = imageEnv(empty.Image)
-	if err != nil || len(env) != 0 {
-		t.Errorf("imageEnv without config: got %v, %v", env, err)
+	config, err = imageConfig(empty.Image)
+	if err != nil {
+		t.Fatalf("imageConfig on empty.Image failed: %v", err)
+	}
+	if config != nil && (len(config.Entrypoint) > 0 || len(config.Cmd) > 0 || config.WorkingDir != "" || len(config.Env) > 0) {
+		t.Errorf("expected empty config for empty.Image, got %+v", config)
 	}
 }
