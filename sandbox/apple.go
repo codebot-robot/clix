@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"runtime"
 )
@@ -70,7 +69,7 @@ func (s *appleContainerSandbox) String() string {
 	return "apple-container"
 }
 
-func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *appleContainerSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("command cancelled: %w", err)
 	}
@@ -79,7 +78,7 @@ func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout
 		return fmt.Errorf("network isolation is not supported by the apple-container sandbox")
 	}
 
-	terminal := isTerminal(stdin)
+	terminal := shouldAllocateTerminal(options)
 	cmdArgs, err := buildAppleContainerArgs(script, args, terminal)
 	if err != nil {
 		return err
@@ -91,14 +90,14 @@ func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout
 	}
 
 	cmd := execCommand(executable, cmdArgs...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	// Only move to a new process group when stdin is not a terminal: a process
+	cmd.Stdin = options.Stdin
+	cmd.Stdout = options.Stdout
+	cmd.Stderr = options.Stderr
+	// Only move to a new process group when the run is not interactive: a process
 	// outside the foreground group is stopped when reading the terminal and
 	// misses Ctrl-C, so interactive runs keep the caller's group (with the
 	// trade-off that cancellation kills only the direct process).
-	setupProcessGroup(cmd, stdin)
+	setupProcessGroup(cmd, options)
 
 	return runCommand(ctx, "container", cmd, func() error {
 		return killProcessTree(cmd)

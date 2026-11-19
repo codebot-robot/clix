@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,7 +185,7 @@ func TestBackendExitError(t *testing.T) {
 		sandbox := &dockerSandbox{}
 		script := Config{Image: "alpine"}
 		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, []string{"exit42"})
+		err := sandbox.Run(t.Context(), script, []string{"exit42"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 		if err == nil {
 			t.Fatalf("expected error from failing tool, got nil")
 		}
@@ -248,7 +249,7 @@ func TestDockerContextCancelled(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() {
 		var stdout, stderr bytes.Buffer
-		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep", "60"})
+		runDone <- backend.Run(ctx, script, []string{"sleep", "60"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	}()
 
 	deadline := time.Now().Add(30 * time.Second)
@@ -321,7 +322,7 @@ func TestBackendContextCancelledMock(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			assertRunCancelled(t, func(ctx context.Context) error {
 				var stdout, stderr bytes.Buffer
-				return testCase.backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, testCase.config, []string{"sleep"})
+				return testCase.backend.Run(ctx, testCase.config, []string{"sleep"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 			})
 		})
 	}
@@ -347,7 +348,7 @@ func TestDockerStopFailureReported(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() {
 		var stdout, stderr bytes.Buffer
-		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep"})
+		runDone <- backend.Run(ctx, script, []string{"sleep"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -394,7 +395,7 @@ func TestDockerStopTimeoutReported(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() {
 		var stdout, stderr bytes.Buffer
-		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep"})
+		runDone <- backend.Run(ctx, script, []string{"sleep"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -425,7 +426,7 @@ func TestContextAlreadyCancelledBeforeRun(t *testing.T) {
 	cancel()
 
 	var stdout, stderr bytes.Buffer
-	err := backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"sleep"})
+	err := backend.Run(ctx, script, []string{"sleep"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	if err == nil {
 		t.Fatalf("expected error from cancelled context before run, got nil")
 	}
@@ -464,7 +465,7 @@ func TestDockerRunsGivenExecutableInsteadOfPath(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hello"}); err != nil {
+	if err := backend.Run(t.Context(), config, []string{"echo", "hello"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
 		t.Fatalf("backend.Run failed: %v", err)
 	}
 
@@ -481,5 +482,66 @@ func TestDockerRunsGivenExecutableInsteadOfPath(t *testing.T) {
 	actualArguments := strings.Split(strings.TrimSpace(string(argumentsContent)), "\n")
 	if len(actualArguments) == 0 || actualArguments[0] != "run" {
 		t.Errorf("expected custom executable to receive docker run arguments, got %v", actualArguments)
+	}
+}
+
+func TestDockerTerminalAllocationWithRunOptions(t *testing.T) {
+	interactiveTrue := true
+	interactiveFalse := false
+
+	tests := []struct {
+		name               string
+		options            RunOptions
+		terminalStdin      bool
+		expectTerminalFlag bool
+	}{
+		{
+			name:               "UnsetWithNonTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader("")},
+			terminalStdin:      false,
+			expectTerminalFlag: false,
+		},
+		{
+			name:               "UnsetWithTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader("")},
+			terminalStdin:      true,
+			expectTerminalFlag: true,
+		},
+		{
+			name:               "ExplicitTrueWithNonTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveTrue},
+			terminalStdin:      false,
+			expectTerminalFlag: false,
+		},
+		{
+			name:               "ExplicitTrueWithTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveTrue},
+			terminalStdin:      true,
+			expectTerminalFlag: true,
+		},
+		{
+			name:               "ExplicitFalseWithNonTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveFalse},
+			terminalStdin:      false,
+			expectTerminalFlag: false,
+		},
+		{
+			name:               "ExplicitFalseWithTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveFalse},
+			terminalStdin:      true,
+			expectTerminalFlag: false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			oldIsTerminal := isTerminalFunction
+			defer func() { isTerminalFunction = oldIsTerminal }()
+			isTerminalFunction = func(io.Reader) bool { return testCase.terminalStdin }
+
+			if got := shouldAllocateTerminal(testCase.options); got != testCase.expectTerminalFlag {
+				t.Errorf("shouldAllocateTerminal() = %v, want %v", got, testCase.expectTerminalFlag)
+			}
+		})
 	}
 }

@@ -18,18 +18,19 @@ package sandbox
 
 import (
 	"errors"
-	"io"
 	"os/exec"
 	"syscall"
 )
 
-// setupProcessGroup places cmd into its own process group if stdin is not a terminal.
+// setupProcessGroup places cmd into its own process group if the run is not interactive
+// and stdin is not a terminal.
 // A process outside the terminal's foreground group is stopped when it reads the
 // terminal and does not receive Ctrl-C (delivered only to the foreground group), so
-// interactive runs keep the caller's group. The trade-off is that on cancellation
-// only the direct process is killed rather than an entire process group.
-func setupProcessGroup(cmd *exec.Cmd, stdin io.Reader) {
-	if isTerminal(stdin) {
+// interactive runs and runs with a terminal stdin keep the caller's group. The trade-off
+// is that on cancellation only the direct process is killed rather than an entire
+// process group.
+func setupProcessGroup(cmd *exec.Cmd, options RunOptions) {
+	if isInteractive(options) || isTerminal(options.Stdin) {
 		return
 	}
 	if cmd.SysProcAttr == nil {

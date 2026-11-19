@@ -21,7 +21,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -733,7 +732,7 @@ func (s *recordingSandbox) String() string {
 	return "recording"
 }
 
-func (s *recordingSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
+func (s *recordingSandbox) Run(ctx context.Context, script sandbox.Config, args []string, options sandbox.RunOptions) error {
 	s.configs = append(s.configs, script)
 	return nil
 }

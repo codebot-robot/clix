@@ -17,11 +17,10 @@
 package sandbox
 
 import (
-	"io"
 	"os/exec"
 )
 
-func setupProcessGroup(cmd *exec.Cmd, stdin io.Reader) {}
+func setupProcessGroup(cmd *exec.Cmd, options RunOptions) {}
 
 func hasProcessGroup(cmd *exec.Cmd) bool {
 	return false

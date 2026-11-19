@@ -71,14 +71,14 @@ func (s *dockerSandbox) String() string {
 	return "docker"
 }
 
-func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *dockerSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(2).Info("DockerSandbox: preparing args")
 	containerName, err := generateContainerNameFunction()
 	if err != nil {
 		return err
 	}
-	cmdArgs, err := buildDockerArgs(script, args, isTerminal(stdin))
+	cmdArgs, err := buildDockerArgs(script, args, shouldAllocateTerminal(options))
 	if err != nil {
 		return err
 	}
@@ -91,9 +91,9 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 
 	logger.V(1).Info(fmt.Sprintf("DockerSandbox: running %s %v", executable, cmdArgs))
 	cmd := execCommand(executable, cmdArgs...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdin = options.Stdin
+	cmd.Stdout = options.Stdout
+	cmd.Stderr = options.Stderr
 
 	stopAction := func() error {
 		var killError error
@@ -186,10 +186,25 @@ func buildDockerArgs(script Config, args []string, terminal bool) ([]string, err
 	return cmdArgs, nil
 }
 
-func isTerminal(reader io.Reader) bool {
+var isTerminalFunction = func(reader io.Reader) bool {
 	file, ok := reader.(*os.File)
 	if !ok {
 		return false
 	}
 	return term.IsTerminal(int(file.Fd()))
+}
+
+func isTerminal(reader io.Reader) bool {
+	return isTerminalFunction(reader)
+}
+
+func isInteractive(options RunOptions) bool {
+	if options.Interactive != nil {
+		return *options.Interactive
+	}
+	return isTerminal(options.Stdin)
+}
+
+func shouldAllocateTerminal(options RunOptions) bool {
+	return isInteractive(options) && isTerminal(options.Stdin)
 }

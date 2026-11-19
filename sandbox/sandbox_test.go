@@ -284,7 +284,7 @@ func TestBackendArgumentsIdentical(t *testing.T) {
 
 		sandbox := &prootSandbox{}
 		var stdout, stderr bytes.Buffer
-		err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, args)
+		err := sandbox.Run(t.Context(), script, args, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 		if err != nil {
 			t.Fatalf("sandbox.Run failed: %v", err)
 		}
@@ -343,7 +343,7 @@ func TestBackendArgumentsNoEntrypoint(t *testing.T) {
 
 		sandbox := &prootSandbox{}
 		var stdout, stderr bytes.Buffer
-		if err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, nil); err != nil {
+		if err := sandbox.Run(t.Context(), script, nil, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
 			t.Fatalf("sandbox.Run failed: %v", err)
 		}
 		expected := append([]string{"-r", "/mock/rootfs", "-w", "/app"}, expectedCommandLine...)
@@ -366,7 +366,7 @@ func TestBackendArgumentsNoEntrypoint(t *testing.T) {
 
 		sandbox := &chrootSandbox{}
 		var stdout, stderr bytes.Buffer
-		if err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, nil); err != nil {
+		if err := sandbox.Run(t.Context(), script, nil, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
 			t.Fatalf("sandbox.Run failed: %v", err)
 		}
 		if capturedCommand == nil || !slices.Equal(capturedCommand.Args, expectedCommandLine) {
@@ -441,7 +441,7 @@ func TestLibraryCallerLoggerReceivesMessages(t *testing.T) {
 	sandbox := &dockerSandbox{}
 	script := Config{Image: "alpine"}
 	var stdout, stderr bytes.Buffer
-	err := sandbox.Run(ctx, strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+	err := sandbox.Run(ctx, script, []string{"echo", "hello"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	if err != nil {
 		t.Fatalf("sandbox.Run failed: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestNoLoggerNoOutputToStderr(t *testing.T) {
 	sandbox := &dockerSandbox{}
 	script := Config{Image: "alpine"}
 	var stdout, stderr bytes.Buffer
-	runErr := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+	runErr := sandbox.Run(t.Context(), script, []string{"echo", "hello"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 
 	if err := pipeWriter.Close(); err != nil {
 		t.Errorf("failed to close pipe writer: %v", err)
@@ -531,7 +531,7 @@ func TestUnsupportedBackendsRejectNetworkIsolation(t *testing.T) {
 				Network: "none",
 			}
 			var stdout, stderr bytes.Buffer
-			err = backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+			err = backend.Run(t.Context(), config, []string{"echo", "hi"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 			if err == nil {
 				t.Fatalf("expected error for backend %s, got nil", testCase.backendName)
 			}
@@ -568,7 +568,7 @@ func TestBackendsRejectUnsupportedNetworkMode(t *testing.T) {
 				Network: "custom",
 			}
 			var stdout, stderr bytes.Buffer
-			err = backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+			err = backend.Run(t.Context(), config, []string{"echo", "hi"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 			if err == nil {
 				t.Fatalf("expected error for backend %s, got nil", testCase.backendName)
 			}
@@ -655,7 +655,7 @@ func TestMountValidation(t *testing.T) {
 						Mounts: []Mount{testCase.mount},
 					}
 					var stdout, stderr bytes.Buffer
-					err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+					err := backend.Run(t.Context(), config, []string{"echo", "hi"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 					if err == nil {
 						t.Fatalf("expected error for invalid mount %+v, got nil", testCase.mount)
 					}
@@ -683,7 +683,7 @@ func TestMountValidation(t *testing.T) {
 					},
 				}
 				var stdout, stderr bytes.Buffer
-				err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+				err := backend.Run(t.Context(), config, []string{"echo", "hi"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 				if err != nil {
 					t.Fatalf("expected valid character %q to be accepted on %s, got error: %v", targetBackend.allowedCharacter, targetBackend.name, err)
 				}
@@ -709,7 +709,7 @@ func TestWithExecutableBackends(t *testing.T) {
 			return fakeExecCommand(name, args...)
 		}
 		var stdout, stderr bytes.Buffer
-		if err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, Config{Image: "alpine"}, []string{"echo"}); err != nil {
+		if err := backend.Run(t.Context(), Config{Image: "alpine"}, []string{"echo"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
 			t.Fatalf("backend.Run failed: %v", err)
 		}
 		return executedCommand
