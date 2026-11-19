@@ -19,6 +19,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -81,4 +82,81 @@ func TestChrootNetworkConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChrootUsable(t *testing.T) {
+	sandbox := &chrootSandbox{}
+
+	t.Run("ExpectedCause", func(t *testing.T) {
+		testCases := []struct {
+			name           string
+			simulatedError error
+		}{
+			{name: "PermissionDenied", simulatedError: syscall.EPERM},
+			{name: "InvalidArgument", simulatedError: syscall.EINVAL},
+			{name: "NoSpaceLeft", simulatedError: syscall.ENOSPC},
+			{name: "TooManyUsers", simulatedError: syscall.EUSERS},
+		}
+
+		for _, testCase := range testCases {
+			t.Run(testCase.name, func(t *testing.T) {
+				oldRunCommand := runCommandFunction
+				defer func() { runCommandFunction = oldRunCommand }()
+				runCommandFunction = func(ctx context.Context, backendName string, cmd *exec.Cmd, stopAction func() error) error {
+					return testCase.simulatedError
+				}
+
+				err := sandbox.Usable(t.Context())
+				if err == nil {
+					t.Fatalf("expected error from Usable, got nil")
+				}
+
+				expectedMessage := "unprivileged user namespaces are not available for chroot: enable kernel user namespaces"
+				if !strings.Contains(err.Error(), expectedMessage) {
+					t.Errorf("expected error to contain %q, got %q", expectedMessage, err.Error())
+				}
+				if !errors.Is(err, testCase.simulatedError) {
+					t.Errorf("expected errors.Is(err, %v), got %v", testCase.simulatedError, err)
+				}
+			})
+		}
+	})
+
+	t.Run("UnrelatedFailure", func(t *testing.T) {
+		testCases := []struct {
+			name           string
+			simulatedError error
+		}{
+			{name: "AccessDenied", simulatedError: syscall.EACCES},
+			{name: "ResourceUnavailable", simulatedError: syscall.EAGAIN},
+		}
+
+		for _, testCase := range testCases {
+			t.Run(testCase.name, func(t *testing.T) {
+				oldRunCommand := runCommandFunction
+				defer func() { runCommandFunction = oldRunCommand }()
+				runCommandFunction = func(ctx context.Context, backendName string, cmd *exec.Cmd, stopAction func() error) error {
+					return testCase.simulatedError
+				}
+
+				err := sandbox.Usable(t.Context())
+				if err == nil {
+					t.Fatalf("expected error from Usable, got nil")
+				}
+
+				unexpectedMessage := "unprivileged user namespaces are not available for chroot"
+				if strings.Contains(err.Error(), unexpectedMessage) {
+					t.Errorf("expected error not to assume user namespaces cause %q, got %q", unexpectedMessage, err.Error())
+				}
+
+				expectedPrefix := "cannot probe user namespaces"
+				if !strings.Contains(err.Error(), expectedPrefix) {
+					t.Errorf("expected error to contain %q, got %q", expectedPrefix, err.Error())
+				}
+				if !errors.Is(err, testCase.simulatedError) {
+					t.Errorf("expected errors.Is(err, %v), got %v", testCase.simulatedError, err)
+				}
+			})
+		}
+	})
 }
