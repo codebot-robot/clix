@@ -515,10 +515,6 @@ func TestUnsupportedBackendsRejectNetworkIsolation(t *testing.T) {
 			expectedMessage: "network isolation is not supported by the apple-container sandbox",
 		},
 		{
-			backendName:     "chroot",
-			expectedMessage: "network isolation is not supported by the chroot sandbox",
-		},
-		{
 			backendName:     "proot",
 			expectedMessage: "network isolation is not supported by the proot sandbox",
 		},
@@ -533,6 +529,43 @@ func TestUnsupportedBackendsRejectNetworkIsolation(t *testing.T) {
 			config := Config{
 				Image:   "alpine",
 				Network: "none",
+			}
+			var stdout, stderr bytes.Buffer
+			err = backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})
+			if err == nil {
+				t.Fatalf("expected error for backend %s, got nil", testCase.backendName)
+			}
+			if !strings.Contains(err.Error(), testCase.expectedMessage) {
+				t.Errorf("got error %q, want %q", err.Error(), testCase.expectedMessage)
+			}
+		})
+	}
+}
+
+func TestBackendsRejectUnsupportedNetworkMode(t *testing.T) {
+	testCases := []struct {
+		backendName     string
+		expectedMessage string
+	}{
+		{
+			backendName:     "docker",
+			expectedMessage: `network mode "custom" is not supported by the docker sandbox`,
+		},
+		{
+			backendName:     "chroot",
+			expectedMessage: `network mode "custom" is not supported by the chroot sandbox`,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.backendName, func(t *testing.T) {
+			backend, err := New(testCase.backendName)
+			if err != nil {
+				t.Fatalf("New failed: %v", err)
+			}
+			config := Config{
+				Image:   "alpine",
+				Network: "custom",
 			}
 			var stdout, stderr bytes.Buffer
 			err = backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, []string{"echo", "hi"})

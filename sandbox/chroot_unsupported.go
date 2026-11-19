@@ -26,8 +26,8 @@ import (
 type chrootSandbox struct{}
 
 func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
-	if script.Network != "" {
-		return fmt.Errorf("network isolation is not supported by the chroot sandbox")
+	if script.Network != "" && script.Network != "none" {
+		return fmt.Errorf("network mode %q is not supported by the chroot sandbox", script.Network)
 	}
 	return fmt.Errorf("chroot sandbox is not supported on %s", runtime.GOOS)
 }

@@ -29,8 +29,8 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 		return fmt.Errorf("command cancelled: %w", err)
 	}
 
-	if script.Network != "" {
-		return fmt.Errorf("network isolation is not supported by the chroot sandbox")
+	if script.Network != "" && script.Network != "none" {
+		return fmt.Errorf("network mode %q is not supported by the chroot sandbox", script.Network)
 	}
 
 	if len(script.Mounts) > 0 {
@@ -67,9 +67,13 @@ func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	// Chroot below succeeds), but execve() with a non-zero euid drops all
 	// capabilities, so the workload itself cannot chroot(2) again.
 	const sandboxID = 65534
+	cloneflags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWIPC)
+	if script.Network == "none" {
+		cloneflags |= syscall.CLONE_NEWNET
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Chroot:     rootFS.dir,
-		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWIPC,
+		Cloneflags: cloneflags,
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: sandboxID, HostID: os.Getuid(), Size: 1},
 		},
