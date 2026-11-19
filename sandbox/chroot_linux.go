@@ -15,6 +15,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,6 +24,54 @@ import (
 )
 
 type chrootSandbox struct{}
+
+func checkUserNamespaces(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
+	truePath, err := lookPathFunction("true")
+	if err != nil {
+		if _, statErr := os.Stat("/bin/true"); statErr == nil {
+			truePath = "/bin/true"
+		} else if _, statErr := os.Stat("/usr/bin/true"); statErr == nil {
+			truePath = "/usr/bin/true"
+		} else {
+			return fmt.Errorf("cannot probe user namespaces: true executable not found on PATH")
+		}
+	}
+
+	cmd := execCommand(truePath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUSER,
+	}
+	var outputBuffer bytes.Buffer
+	cmd.Stdout = &outputBuffer
+	cmd.Stderr = &outputBuffer
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("unprivileged user namespaces are not available for chroot: enable kernel user namespaces")
+	}
+
+	return nil
+}
+
+var checkUserNamespacesFunction = checkUserNamespaces
+
+func (s *chrootSandbox) Usable(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
+	return checkUserNamespacesFunction(ctx)
+}
+
+func (s *chrootSandbox) String() string {
+	return "chroot"
+}
 
 func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	if err := ctx.Err(); err != nil {

@@ -80,7 +80,7 @@ docker run \
 
 ## Library Usage
 
-The sandboxing can be imported as a library (`github.com/gke-labs/clix/sandbox`). A caller can select a backend by name or from `CLIX_SANDBOX`, specify executable paths via `sandbox.WithExecutable(backend, executable)`, configure mounts and environment variables, pass a logger via `context.Context`, wire I/O streams, and receive tool execution failures as `*sandbox.ExitError`.
+The sandboxing can be imported as a library (`github.com/gke-labs/clix/sandbox`). A caller can select a backend by name, from `CLIX_SANDBOX`, or pick the first usable backend on the host via `sandbox.FirstUsable(ctx, options...)`. Specify executable paths via `sandbox.WithExecutable(backend, executable)`, configure mounts and environment variables, pass a logger via `context.Context`, wire I/O streams, and receive tool execution failures as `*sandbox.ExitError`.
 
 ### Example
 
@@ -97,7 +97,8 @@ import (
 )
 
 func main() {
-	backend, err := sandbox.FromEnvironment()
+	ctx := context.Background()
+	backend, err := sandbox.FirstUsable(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to select sandbox: %v\n", err)
 		os.Exit(1)
@@ -120,7 +121,7 @@ func main() {
 		},
 	}
 
-	err = backend.Run(context.Background(), os.Stdin, os.Stdout, os.Stderr, config, []string{"echo", "hello"})
+	err = backend.Run(ctx, os.Stdin, os.Stdout, os.Stderr, config, []string{"echo", "hello"})
 	if err != nil {
 		var exitError *sandbox.ExitError
 		if errors.As(err, &exitError) {
@@ -131,6 +132,16 @@ func main() {
 	}
 }
 ```
+
+### Usability Probing and Priority Order
+
+`sandbox.FirstUsable(ctx, options...)` evaluates backends in a fixed, documented priority order:
+1. **`docker`**: Checks that the Docker executable is found and that the Docker engine responds to `docker info`.
+2. **`apple-container`**: Checks that the host is macOS (`darwin`), that the `container` executable is found, and that the container service responds to `container system status`.
+3. **`chroot`**: Checks that the host is Linux and that unprivileged user namespaces are available for `chroot`.
+4. **`proot`**: Checks that the host is Linux and that `proot` is installed.
+
+Each backend reports whether it is usable on the host via `backend.Usable(ctx)`. When not usable, it returns an actionable, single-sentence reason. If no backend is usable on the host, `FirstUsable` returns an error listing all candidate backends tried and why each was not usable. Individual backends can also be checked by name using `sandbox.CheckUsable(ctx, backendName, options...)`.
 
 ### Platform Limits
 

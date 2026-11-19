@@ -15,14 +15,59 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 )
+
+var appleContainerOperatingSystem = runtime.GOOS
 
 type appleContainerSandbox struct {
 	executable string
+}
+
+func (s *appleContainerSandbox) Usable(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
+	if appleContainerOperatingSystem != "darwin" {
+		return fmt.Errorf("apple-container requires macOS")
+	}
+
+	executable := s.executable
+	if executable == "" {
+		executable = "container"
+	}
+
+	if _, err := lookPathFunction(executable); err != nil {
+		return fmt.Errorf("%s executable not found: install the Apple container tool", executable)
+	}
+
+	cmd := execCommand(executable, "system", "status")
+	var outputBuffer bytes.Buffer
+	cmd.Stdout = &outputBuffer
+	cmd.Stderr = &outputBuffer
+
+	if err := runCommandFunction(ctx, "container", cmd, nil); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return err
+		}
+		return fmt.Errorf("apple-container service is not running: start the service with '%s system start'", executable)
+	}
+
+	return nil
+}
+
+func (s *appleContainerSandbox) String() string {
+	return "apple-container"
 }
 
 func (s *appleContainerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {

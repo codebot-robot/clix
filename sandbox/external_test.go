@@ -116,4 +116,24 @@ func TestLibraryExportedSurface(t *testing.T) {
 			t.Fatalf("backendWithExecutable.Run failed: %v", err)
 		}
 	})
+
+	t.Run("FirstUsableAndCheckUsable", func(t *testing.T) {
+		firstBackend, err := sandbox.FirstUsable(t.Context(), sandbox.WithExecutable("docker", fakeDockerPath))
+		if err != nil {
+			t.Fatalf("sandbox.FirstUsable failed: %v", err)
+		}
+		if firstBackend == nil {
+			t.Fatal("expected non-nil backend from FirstUsable")
+		}
+		if firstBackend.String() == "" {
+			t.Errorf("expected non-empty backend name, got %q", firstBackend.String())
+		}
+		if err := firstBackend.Usable(t.Context()); err != nil {
+			t.Errorf("expected backend to report usable, got %v", err)
+		}
+
+		if err := sandbox.CheckUsable(t.Context(), "docker", sandbox.WithExecutable("docker", fakeDockerPath)); err != nil {
+			t.Errorf("sandbox.CheckUsable failed: %v", err)
+		}
+	})
 }

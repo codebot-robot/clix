@@ -725,6 +725,14 @@ type recordingSandbox struct {
 	configs []sandbox.Config
 }
 
+func (s *recordingSandbox) Usable(ctx context.Context) error {
+	return nil
+}
+
+func (s *recordingSandbox) String() string {
+	return "recording"
+}
+
 func (s *recordingSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
 	s.configs = append(s.configs, script)
 	return nil
