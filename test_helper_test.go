@@ -28,6 +28,14 @@ import (
 
 type fakeHelperSandbox struct{}
 
+func (s *fakeHelperSandbox) Usable(ctx context.Context) error {
+	return nil
+}
+
+func (s *fakeHelperSandbox) String() string {
+	return "fake"
+}
+
 func (s *fakeHelperSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
 	cmd := execCommand("docker", args...)
 	cmd.Stdin = stdin

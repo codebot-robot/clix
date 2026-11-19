@@ -56,6 +56,18 @@ func TestHelperProcess(t *testing.T) {
 	if behavior == "exit_42" {
 		os.Exit(42)
 	}
+	if behavior == "docker_info_error" {
+		if (cmd == "docker" || baseCommand == "docker") && len(args) > 1 && args[1] == "info" {
+			fmt.Fprintf(os.Stderr, "Cannot connect to the Docker daemon. Is the docker daemon running?\n")
+			os.Exit(1)
+		}
+	}
+	if behavior == "container_service_error" {
+		if (cmd == "container" || baseCommand == "container") && len(args) > 2 && args[1] == "system" && args[2] == "status" {
+			fmt.Fprintf(os.Stderr, "apiserver is not running and not registered with launchd\n")
+			os.Exit(1)
+		}
+	}
 	if behavior == "sleep" {
 		if (cmd == "docker" || baseCommand == "docker") && len(args) > 1 && args[1] == "rm" {
 			os.Exit(0)

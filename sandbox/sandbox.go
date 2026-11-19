@@ -35,6 +35,7 @@ import (
 )
 
 var execCommand = exec.Command
+var lookPathFunction = exec.LookPath
 
 // Sandbox is the execution environment for running a container image.
 type Sandbox interface {
@@ -43,6 +44,14 @@ type Sandbox interface {
 	// If the executed tool exits with a non-zero status, Run returns an
 	// error wrapping *ExitError.
 	Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, config Config, args []string) error
+
+	// Usable reports whether this backend is usable on the current host.
+	// It returns nil when the backend is usable, or an error with a short
+	// actionable sentence explaining why when it is not usable.
+	Usable(ctx context.Context) error
+
+	// String returns the name of the sandbox backend.
+	String() string
 }
 
 // Config describes a container run within a sandbox backend.
@@ -194,6 +203,71 @@ func New(backendName string, options ...Option) (Sandbox, error) {
 // variable, defaulting to "docker" if unset.
 func FromEnvironment(options ...Option) (Sandbox, error) {
 	return New(os.Getenv("CLIX_SANDBOX"), options...)
+}
+
+// candidateBackends defines the fixed, documented order of backends evaluated by FirstUsable.
+var candidateBackends = []string{
+	"docker",
+	"apple-container",
+	"chroot",
+	"proot",
+}
+
+// FirstUsable returns the first usable Sandbox backend on the current host,
+// evaluating backends in the following documented order: "docker", "apple-container",
+// "chroot", and "proot".
+//
+// Options (such as WithExecutable) are applied to candidate backends during evaluation.
+// When no backend is usable on this host, FirstUsable returns an error listing
+// every backend tried and why each was not usable.
+func FirstUsable(ctx context.Context, options ...Option) (Sandbox, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("command cancelled: %w", err)
+	}
+
+	var failureReasons []string
+	for _, backendName := range candidateBackends {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("command cancelled: %w", err)
+		}
+		backend, err := New(backendName, options...)
+		if err != nil {
+			failureReasons = append(failureReasons, fmt.Sprintf("- %s: %v", backendName, err))
+			continue
+		}
+		if err := backend.Usable(ctx); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				if errors.Is(err, ctxErr) {
+					return nil, err
+				}
+				return nil, fmt.Errorf("command cancelled: %w", ctxErr)
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			failureReasons = append(failureReasons, fmt.Sprintf("- %s: %v", backendName, err))
+			continue
+		}
+		return backend, nil
+	}
+
+	return nil, fmt.Errorf("no usable sandbox backend found:\n%s", strings.Join(failureReasons, "\n"))
+}
+
+// CheckUsable reports whether the named backend is usable on the current host
+// given the specified options.
+func CheckUsable(ctx context.Context, backendName string, options ...Option) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	backend, err := New(backendName, options...)
+	if err != nil {
+		return err
+	}
+	return backend.Usable(ctx)
 }
 
 type preparedRootFS struct {

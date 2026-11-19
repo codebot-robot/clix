@@ -35,6 +35,42 @@ type dockerSandbox struct {
 	executable string
 }
 
+func (s *dockerSandbox) Usable(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
+	executable := s.executable
+	if executable == "" {
+		executable = "docker"
+	}
+
+	if _, err := lookPathFunction(executable); err != nil {
+		return fmt.Errorf("%s executable not found: install Docker or add it to PATH", executable)
+	}
+
+	cmd := execCommand(executable, "info")
+	var outputBuffer bytes.Buffer
+	cmd.Stdout = &outputBuffer
+	cmd.Stderr = &outputBuffer
+
+	if err := runCommandFunction(ctx, "docker", cmd, nil); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return err
+		}
+		return fmt.Errorf("docker engine is not responding: start the Docker service or verify permissions")
+	}
+
+	return nil
+}
+
+func (s *dockerSandbox) String() string {
+	return "docker"
+}
+
 func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(2).Info("DockerSandbox: preparing args")

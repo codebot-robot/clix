@@ -18,10 +18,41 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
 )
+
+var prootOperatingSystem = runtime.GOOS
 
 type prootSandbox struct {
 	executable string
+}
+
+func (s *prootSandbox) Usable(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("command cancelled: %w", err)
+	}
+
+	if prootOperatingSystem != "linux" {
+		return fmt.Errorf("proot sandbox is not supported on %s", prootOperatingSystem)
+	}
+
+	executable := s.executable
+	if executable == "" {
+		executable = "proot"
+	}
+
+	if _, err := lookPathFunction(executable); err != nil {
+		return fmt.Errorf("%s executable not found: install proot or add it to PATH", executable)
+	}
+
+	return nil
+}
+
+func (s *prootSandbox) String() string {
+	return "proot"
 }
 
 func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
