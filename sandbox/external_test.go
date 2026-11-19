@@ -105,4 +105,15 @@ func TestLibraryExportedSurface(t *testing.T) {
 			t.Fatal("expected error for unrecognised backend, got nil")
 		}
 	})
+
+	t.Run("WithExecutable", func(t *testing.T) {
+		backendWithExecutable, err := sandbox.New("docker", sandbox.WithExecutable("docker", fakeDockerPath))
+		if err != nil {
+			t.Fatalf("sandbox.New with WithExecutable failed: %v", err)
+		}
+		var customStdout, customStderr bytes.Buffer
+		if err := backendWithExecutable.Run(t.Context(), strings.NewReader(""), &customStdout, &customStderr, config, runArguments); err != nil {
+			t.Fatalf("backendWithExecutable.Run failed: %v", err)
+		}
+	})
 }

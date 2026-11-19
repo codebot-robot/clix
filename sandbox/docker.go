@@ -31,7 +31,9 @@ import (
 
 var dockerStopTimeout = 10 * time.Second
 
-type dockerSandbox struct{}
+type dockerSandbox struct {
+	executable string
+}
 
 func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	logger := logr.FromContextOrDiscard(ctx)
@@ -46,8 +48,13 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 	}
 	cmdArgs = append([]string{"run", "--name", containerName}, cmdArgs[1:]...)
 
-	logger.V(1).Info(fmt.Sprintf("DockerSandbox: running docker %v", cmdArgs))
-	cmd := execCommand("docker", cmdArgs...)
+	executable := s.executable
+	if executable == "" {
+		executable = "docker"
+	}
+
+	logger.V(1).Info(fmt.Sprintf("DockerSandbox: running %s %v", executable, cmdArgs))
+	cmd := execCommand(executable, cmdArgs...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -59,20 +66,20 @@ func (s *dockerSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr
 				killError = processKillError
 			}
 		}
-		stopError := stopDockerContainer(containerName)
+		stopError := stopDockerContainer(executable, containerName)
 		return errors.Join(killError, stopError)
 	}
 
 	return runCommand(ctx, "docker", cmd, stopAction)
 }
 
-func stopDockerContainer(containerName string) error {
-	stopCommand := execCommand("docker", "rm", "-f", containerName)
+func stopDockerContainer(executable string, containerName string) error {
+	stopCommand := execCommand(executable, "rm", "-f", containerName)
 	var output bytes.Buffer
 	stopCommand.Stdout = &output
 	stopCommand.Stderr = &output
 	if err := stopCommand.Start(); err != nil {
-		return fmt.Errorf("failed to stop container %s (remove with 'docker rm -f %s'): %w", containerName, containerName, err)
+		return fmt.Errorf("failed to stop container %s (remove with '%s rm -f %s'): %w", containerName, executable, containerName, err)
 	}
 
 	stopDone := make(chan error, 1)
@@ -83,7 +90,7 @@ func stopDockerContainer(containerName string) error {
 	select {
 	case err := <-stopDone:
 		if err != nil && !strings.Contains(output.String(), "No such container") && !strings.Contains(output.String(), "is already in progress") {
-			return fmt.Errorf("failed to stop container %s (remove with 'docker rm -f %s'): %w", containerName, containerName, err)
+			return fmt.Errorf("failed to stop container %s (remove with '%s rm -f %s'): %w", containerName, executable, containerName, err)
 		}
 		return nil
 	case <-time.After(dockerStopTimeout):
@@ -94,7 +101,7 @@ func stopDockerContainer(containerName string) error {
 			}
 		}
 		<-stopDone
-		timeoutError := fmt.Errorf("failed to stop container %s within %v (remove with 'docker rm -f %s')", containerName, dockerStopTimeout, containerName)
+		timeoutError := fmt.Errorf("failed to stop container %s within %v (remove with '%s rm -f %s')", containerName, dockerStopTimeout, executable, containerName)
 		return errors.Join(timeoutError, killError)
 	}
 }

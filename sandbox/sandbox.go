@@ -143,20 +143,47 @@ func newExitError(exitCode int) *ExitError {
 	return NewExitError(exitCode)
 }
 
+// Option configures a Sandbox backend.
+type Option func(*sandboxOptions)
+
+type sandboxOptions struct {
+	executables map[string]string
+}
+
+// WithExecutable specifies the executable for the named backend to run instead of
+// searching PATH for the default helper executable ("docker", "proot", or "container").
+// Options for backends other than the one constructed are ignored.
+func WithExecutable(backend string, executable string) Option {
+	return func(options *sandboxOptions) {
+		if options.executables == nil {
+			options.executables = make(map[string]string)
+		}
+		if backend == "" {
+			backend = "docker"
+		}
+		options.executables[backend] = executable
+	}
+}
+
 // New returns a Sandbox implementation for the given backend name.
 // If backendName is empty, it defaults to "docker".
 // Valid backend names are "docker", "apple-container", "chroot", and "proot".
 // If the backend name is unrecognised, New returns an error.
-func New(backendName string) (Sandbox, error) {
+func New(backendName string, options ...Option) (Sandbox, error) {
+	var backendOptions sandboxOptions
+	for _, option := range options {
+		option(&backendOptions)
+	}
+
 	switch backendName {
 	case "", "docker":
-		return &dockerSandbox{}, nil
+		return &dockerSandbox{executable: backendOptions.executables["docker"]}, nil
 	case "apple-container":
-		return &appleContainerSandbox{}, nil
+		return &appleContainerSandbox{executable: backendOptions.executables["apple-container"]}, nil
 	case "chroot":
 		return &chrootSandbox{}, nil
 	case "proot":
-		return &prootSandbox{}, nil
+		return &prootSandbox{executable: backendOptions.executables["proot"]}, nil
 	default:
 		return nil, fmt.Errorf("unknown sandbox backend %q", backendName)
 	}
@@ -164,8 +191,8 @@ func New(backendName string) (Sandbox, error) {
 
 // FromEnvironment returns a Sandbox chosen by the CLIX_SANDBOX environment
 // variable, defaulting to "docker" if unset.
-func FromEnvironment() (Sandbox, error) {
-	return New(os.Getenv("CLIX_SANDBOX"))
+func FromEnvironment(options ...Option) (Sandbox, error) {
+	return New(os.Getenv("CLIX_SANDBOX"), options...)
 }
 
 type preparedRootFS struct {

@@ -20,7 +20,9 @@ import (
 	"io"
 )
 
-type prootSandbox struct{}
+type prootSandbox struct {
+	executable string
+}
 
 func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
 	if err := ctx.Err(); err != nil {
@@ -86,8 +88,13 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 
 	prootArgs = append(prootArgs, cmdArgs...)
 
+	executable := s.executable
+	if executable == "" {
+		executable = "proot"
+	}
+
 	// Prepare the command
-	cmd := execCommand("proot", prootArgs...)
+	cmd := execCommand(executable, prootArgs...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

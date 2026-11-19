@@ -80,7 +80,7 @@ docker run \
 
 ## Library Usage
 
-The sandboxing can be imported as a library (`github.com/gke-labs/clix/sandbox`). A caller can select a backend by name or from `CLIX_SANDBOX`, configure mounts and environment variables, pass a logger via `context.Context`, wire I/O streams, and receive tool execution failures as `*sandbox.ExitError`.
+The sandboxing can be imported as a library (`github.com/gke-labs/clix/sandbox`). A caller can select a backend by name or from `CLIX_SANDBOX`, specify executable paths via `sandbox.WithExecutable(backend, executable)`, configure mounts and environment variables, pass a logger via `context.Context`, wire I/O streams, and receive tool execution failures as `*sandbox.ExitError`.
 
 ### Example
 
