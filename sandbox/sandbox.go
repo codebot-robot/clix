@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -196,12 +197,15 @@ func FromEnvironment(options ...Option) (Sandbox, error) {
 }
 
 type preparedRootFS struct {
-	dir     string
-	env     []string
-	cleanup func()
+	dir        string
+	env        []string
+	entrypoint []string
+	cmd        []string
+	workingDir string
+	cleanup    func()
 }
 
-func imageEnv(image v1.Image) ([]string, error) {
+func imageConfig(image v1.Image) (*v1.Config, error) {
 	configFile, err := image.ConfigFile()
 	if err != nil {
 		return nil, fmt.Errorf("reading image config: %w", err)
@@ -209,7 +213,7 @@ func imageEnv(image v1.Image) ([]string, error) {
 	if configFile == nil {
 		return nil, nil
 	}
-	return configFile.Config.Env, nil
+	return &configFile.Config, nil
 }
 
 func prepareRootFS(ctx context.Context, imageRef string) (*preparedRootFS, error) {
@@ -219,9 +223,18 @@ func prepareRootFS(ctx context.Context, imageRef string) (*preparedRootFS, error
 		return nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
 	}
 
-	env, err := imageEnv(image)
+	var env, entrypoint, cmd []string
+	var workingDir string
+
+	config, err := imageConfig(image)
 	if err != nil {
 		return nil, err
+	}
+	if config != nil {
+		env = config.Env
+		entrypoint = config.Entrypoint
+		cmd = config.Cmd
+		workingDir = config.WorkingDir
 	}
 
 	tempDir, err := os.MkdirTemp("", "clix-chroot-*")
@@ -248,13 +261,32 @@ func prepareRootFS(ctx context.Context, imageRef string) (*preparedRootFS, error
 	}
 
 	return &preparedRootFS{
-		dir:     tempDir,
-		env:     env,
-		cleanup: cleanup,
+		dir:        tempDir,
+		env:        env,
+		entrypoint: entrypoint,
+		cmd:        cmd,
+		workingDir: workingDir,
+		cleanup:    cleanup,
 	}, nil
 }
 
 var prepareRootFSFunction = prepareRootFS
+
+func resolveRootFSCommand(entrypoint string, args []string, rootFS *preparedRootFS) (string, []string, error) {
+	if entrypoint != "" {
+		return entrypoint, append([]string{entrypoint}, args...), nil
+	}
+	if len(args) > 0 {
+		return args[0], args, nil
+	}
+	if rootFS != nil {
+		imageArguments := append(slices.Clone(rootFS.entrypoint), rootFS.cmd...)
+		if len(imageArguments) > 0 {
+			return imageArguments[0], imageArguments, nil
+		}
+	}
+	return "", nil, fmt.Errorf("no command specified, no entrypoint in script, and no ENTRYPOINT or CMD in image")
+}
 
 func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {
 	var order []string
@@ -464,3 +496,5 @@ func runCommand(ctx context.Context, backendName string, cmd *exec.Cmd, stopActi
 		return fmt.Errorf("command cancelled: %w", ctx.Err())
 	}
 }
+
+var runCommandFunction = runCommand
