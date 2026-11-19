@@ -251,7 +251,11 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
 	script.Mounts = resolvedMounts
 
 	log(1, "Running image: %s", script.Image)
-	return backend.Run(ctx, stdin, stdout, stderr, script.Config, runArgs)
+	return backend.Run(ctx, script.Config, runArgs, sandbox.RunOptions{
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
 }
 
 func runGo(stdin io.Reader, stdout, stderr io.Writer, config *GoConfig, args []string) error {

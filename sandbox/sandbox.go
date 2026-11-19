@@ -39,11 +39,10 @@ var lookPathFunction = exec.LookPath
 
 // Sandbox is the execution environment for running a container image.
 type Sandbox interface {
-	// Run executes the container image described by config with args.
-	// Stdin, stdout, and stderr are wired to the process.
+	// Run executes the container image described by config with args and options.
 	// If the executed tool exits with a non-zero status, Run returns an
 	// error wrapping *ExitError.
-	Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, config Config, args []string) error
+	Run(ctx context.Context, config Config, args []string, options RunOptions) error
 
 	// Usable reports whether this backend is usable on the current host.
 	// It returns nil when the backend is usable, or an error with a short
@@ -52,6 +51,30 @@ type Sandbox interface {
 
 	// String returns the name of the sandbox backend.
 	String() string
+}
+
+// RunOptions specifies per-run settings and streams for a sandbox execution.
+type RunOptions struct {
+	// Stdin is the standard input stream for the execution.
+	Stdin io.Reader
+	// Stdout is the standard output stream for the execution.
+	Stdout io.Writer
+	// Stderr is the standard error stream for the execution.
+	Stderr io.Writer
+	// Interactive specifies whether the run is interactive.
+	// When unset (nil), interactivity is inferred from whether Stdin is a terminal.
+	//
+	// When true, the tool keeps the caller's process group so terminal signals
+	// (such as Ctrl-C) are delivered directly to the foreground group. Terminal
+	// flags (-t / -it) are enabled only if Stdin is actually a terminal; if Stdin
+	// is not a terminal, terminal flags are omitted to prevent backend errors.
+	//
+	// When false, terminal flags (-t / -it) are never passed. The tool is placed
+	// in its own process group (on supported Unix backends) so cancellation kills
+	// the entire process tree, provided Stdin is not a terminal. If Stdin is a
+	// terminal, the tool remains in the caller's process group to prevent the
+	// operating system from stopping the process when reading from the terminal.
+	Interactive *bool
 }
 
 // Config describes a container run within a sandbox backend.

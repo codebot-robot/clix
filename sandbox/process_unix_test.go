@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -87,7 +88,7 @@ func TestProcessGroupGrandchildKilledOnCancel(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() {
 		var stdout, stderr bytes.Buffer
-		runDone <- backend.Run(ctx, strings.NewReader(""), &stdout, &stderr, config, []string{"sleep"})
+		runDone <- backend.Run(ctx, config, []string{"sleep"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	}()
 
 	var grandchildProcessID int
@@ -136,5 +137,68 @@ func TestProcessGroupGrandchildKilledOnCancel(t *testing.T) {
 			t.Fatalf("grandchild process %d is still running after process group cancellation", grandchildProcessID)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestSetupProcessGroupWithRunOptions(t *testing.T) {
+	interactiveTrue := true
+	interactiveFalse := false
+
+	tests := []struct {
+		name               string
+		options            RunOptions
+		terminalStdin      bool
+		expectProcessGroup bool
+	}{
+		{
+			name:               "UnsetWithNonTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader("")},
+			terminalStdin:      false,
+			expectProcessGroup: true,
+		},
+		{
+			name:               "UnsetWithTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader("")},
+			terminalStdin:      true,
+			expectProcessGroup: false,
+		},
+		{
+			name:               "ExplicitTrueWithNonTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveTrue},
+			terminalStdin:      false,
+			expectProcessGroup: false,
+		},
+		{
+			name:               "ExplicitTrueWithTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveTrue},
+			terminalStdin:      true,
+			expectProcessGroup: false,
+		},
+		{
+			name:               "ExplicitFalseWithNonTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveFalse},
+			terminalStdin:      false,
+			expectProcessGroup: true,
+		},
+		{
+			name:               "ExplicitFalseWithTerminalStdin",
+			options:            RunOptions{Stdin: strings.NewReader(""), Interactive: &interactiveFalse},
+			terminalStdin:      true,
+			expectProcessGroup: false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			oldIsTerminal := isTerminalFunction
+			defer func() { isTerminalFunction = oldIsTerminal }()
+			isTerminalFunction = func(io.Reader) bool { return testCase.terminalStdin }
+
+			cmd := fakeExecCommand("echo", "test")
+			setupProcessGroup(cmd, testCase.options)
+			if hasProcessGroup(cmd) != testCase.expectProcessGroup {
+				t.Errorf("hasProcessGroup() = %v, want %v", hasProcessGroup(cmd), testCase.expectProcessGroup)
+			}
+		})
 	}
 }

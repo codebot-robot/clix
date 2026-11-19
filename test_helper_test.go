@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -36,11 +35,11 @@ func (s *fakeHelperSandbox) String() string {
 	return "fake"
 }
 
-func (s *fakeHelperSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script sandbox.Config, args []string) error {
+func (s *fakeHelperSandbox) Run(ctx context.Context, script sandbox.Config, args []string, options sandbox.RunOptions) error {
 	cmd := execCommand("docker", args...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdin = options.Stdin
+	cmd.Stdout = options.Stdout
+	cmd.Stderr = options.Stderr
 	if err := cmd.Run(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			return sandbox.NewExitError(exitError.ExitCode())

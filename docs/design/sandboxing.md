@@ -121,7 +121,11 @@ func main() {
 		},
 	}
 
-	err = backend.Run(ctx, os.Stdin, os.Stdout, os.Stderr, config, []string{"echo", "hello"})
+	err = backend.Run(ctx, config, []string{"echo", "hello"}, sandbox.RunOptions{
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	})
 	if err != nil {
 		var exitError *sandbox.ExitError
 		if errors.As(err, &exitError) {

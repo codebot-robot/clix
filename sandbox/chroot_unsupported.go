@@ -19,7 +19,6 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"io"
 	"runtime"
 )
 
@@ -43,7 +42,7 @@ func (s *chrootSandbox) String() string {
 	return "chroot"
 }
 
-func (s *chrootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *chrootSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
 	if script.Network != "" && script.Network != "none" {
 		return fmt.Errorf("network mode %q is not supported by the chroot sandbox", script.Network)
 	}

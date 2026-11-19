@@ -17,7 +17,6 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"io"
 	"runtime"
 )
 
@@ -55,7 +54,7 @@ func (s *prootSandbox) String() string {
 	return "proot"
 }
 
-func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, script Config, args []string) error {
+func (s *prootSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("command cancelled: %w", err)
 	}
@@ -99,8 +98,8 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 		}
 		prootArgs = append(prootArgs, "-b", fmt.Sprintf("%s:%s", mount.HostPath, mount.SandboxPath))
 	}
-	if warnGit {
-		if _, err := fmt.Fprintf(stderr, "warning: proot sandbox cannot protect .git from writes\n"); err != nil {
+	if warnGit && options.Stderr != nil {
+		if _, err := fmt.Fprintf(options.Stderr, "warning: proot sandbox cannot protect .git from writes\n"); err != nil {
 			return err
 		}
 	}
@@ -118,19 +117,19 @@ func (s *prootSandbox) Run(ctx context.Context, stdin io.Reader, stdout, stderr 
 
 	// Prepare the command
 	cmd := execCommand(executable, prootArgs...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdin = options.Stdin
+	cmd.Stdout = options.Stdout
+	cmd.Stderr = options.Stderr
 
 	// We start at root of the new root
 	cmd.Dir = "/"
 
 	cmd.Env = buildSandboxEnv(rootFS.env, script.Env)
-	// Only move to a new process group when stdin is not a terminal: a process
+	// Only move to a new process group when the run is not interactive: a process
 	// outside the foreground group is stopped when reading the terminal and
 	// misses Ctrl-C, so interactive runs keep the caller's group (with the
 	// trade-off that cancellation kills only the direct process).
-	setupProcessGroup(cmd, stdin)
+	setupProcessGroup(cmd, options)
 
 	return runCommandFunction(ctx, "proot", cmd, func() error {
 		return killProcessTree(cmd)

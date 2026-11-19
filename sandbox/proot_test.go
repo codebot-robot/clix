@@ -34,7 +34,7 @@ func TestProotReadOnlyMountRejected(t *testing.T) {
 		},
 	}
 
-	err := sandbox.Run(t.Context(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hi"})
+	err := sandbox.Run(t.Context(), script, []string{"echo", "hi"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err == nil {
 		t.Fatalf("expected error for read-only mount in proot, got nil")
 	}
@@ -53,7 +53,7 @@ func TestProotReadOnlyMountDeclaredByScriptRejectedEvenIfNamedGit(t *testing.T) 
 		},
 	}
 
-	err := sandbox.Run(t.Context(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"echo", "hi"})
+	err := sandbox.Run(t.Context(), script, []string{"echo", "hi"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err == nil {
 		t.Fatalf("expected error for script-declared read-only mount ending in .git, got nil")
 	}
@@ -99,7 +99,7 @@ func TestProotRepoRootMount(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, []string{"echo", "hello"})
+	err := sandbox.Run(t.Context(), script, []string{"echo", "hello"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	if err != nil {
 		t.Fatalf("sandbox.Run failed: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestProotFailingToolCleansUpRootFS(t *testing.T) {
 		},
 	}
 
-	err := sandbox.Run(t.Context(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, script, []string{"failing-tool"})
+	err := sandbox.Run(t.Context(), script, []string{"failing-tool"}, RunOptions{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	var exitError *ExitError
 	if !errors.As(err, &exitError) || exitError.ExitCode() != 42 {
 		t.Fatalf("expected ExitError with code 42, got %v", err)

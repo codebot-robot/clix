@@ -69,7 +69,7 @@ func TestChrootNetworkConfiguration(t *testing.T) {
 				Network: testCase.network,
 			}
 			var stdout, stderr bytes.Buffer
-			if err := sandbox.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, script, nil); err != nil {
+			if err := sandbox.Run(t.Context(), script, nil, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
 				t.Fatalf("sandbox.Run failed: %v", err)
 			}
 			if capturedCommand == nil || capturedCommand.SysProcAttr == nil {

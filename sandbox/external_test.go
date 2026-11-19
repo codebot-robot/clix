@@ -56,7 +56,7 @@ func TestLibraryExportedSurface(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	runArguments := []string{"-c", "echo hello"}
-	if err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, runArguments); err != nil {
+	if err := backend.Run(t.Context(), config, runArguments, sandbox.RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
 		t.Fatalf("backend.Run failed: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestLibraryExportedSurface(t *testing.T) {
 
 	t.Run("NonZeroExitReportedAsExitError", func(t *testing.T) {
 		t.Setenv("MOCK_EXIT_CODE", "42")
-		err := backend.Run(t.Context(), strings.NewReader(""), &stdout, &stderr, config, runArguments)
+		err := backend.Run(t.Context(), config, runArguments, sandbox.RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 		var exitError *sandbox.ExitError
 		if !errors.As(err, &exitError) || exitError.ExitCode() != 42 {
 			t.Fatalf("expected ExitError with exit code 42, got %v", err)
@@ -112,8 +112,32 @@ func TestLibraryExportedSurface(t *testing.T) {
 			t.Fatalf("sandbox.New with WithExecutable failed: %v", err)
 		}
 		var customStdout, customStderr bytes.Buffer
-		if err := backendWithExecutable.Run(t.Context(), strings.NewReader(""), &customStdout, &customStderr, config, runArguments); err != nil {
+		if err := backendWithExecutable.Run(t.Context(), config, runArguments, sandbox.RunOptions{Stdin: strings.NewReader(""), Stdout: &customStdout, Stderr: &customStderr}); err != nil {
 			t.Fatalf("backendWithExecutable.Run failed: %v", err)
+		}
+	})
+
+	t.Run("RunOptionsInteractive", func(t *testing.T) {
+		for _, interactive := range []bool{true, false} {
+			var customOutput bytes.Buffer
+			isInteractive := interactive
+			if err := backend.Run(t.Context(), config, runArguments, sandbox.RunOptions{
+				Stdin:       strings.NewReader(""),
+				Stdout:      &customOutput,
+				Stderr:      &customOutput,
+				Interactive: &isInteractive,
+			}); err != nil {
+				t.Fatalf("backend.Run with Interactive=%v failed: %v", interactive, err)
+			}
+
+			argumentsData, err := os.ReadFile(argumentsFile)
+			if err != nil {
+				t.Fatalf("failed to read arguments file: %v", err)
+			}
+			actualArgs := strings.Split(strings.TrimSpace(string(argumentsData)), "\n")
+			if slices.Contains(actualArgs, "-t") {
+				t.Errorf("Interactive=%v: expected no -t when Stdin is not a terminal, got arguments %v", interactive, actualArgs)
+			}
 		}
 	})
 
