@@ -17,12 +17,28 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 )
 
 type chrootSandbox struct{}
+
+// isUserNamespaceError reports whether err indicates that user namespaces are
+// unavailable or not permitted on this kernel/host (see clone(2) and user_namespaces(7)):
+//   - EPERM: unprivileged user namespaces disabled (e.g. kernel.unprivileged_userns_clone = 0),
+//     missing capabilities, or caller is in a chroot.
+//   - EINVAL: kernel was compiled without user namespace support (CONFIG_USER_NS disabled).
+//   - ENOSPC: user namespace limit reached or disabled via user.max_user_namespaces = 0 (Linux >= 3.11).
+//   - EUSERS: older kernel limit reached for nested user namespaces (Linux 3.11 to 4.8).
+func isUserNamespaceError(err error) bool {
+	return errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EINVAL) ||
+		errors.Is(err, syscall.ENOSPC) ||
+		errors.Is(err, syscall.EUSERS)
+}
 
 func checkUserNamespaces(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -36,7 +52,7 @@ func checkUserNamespaces(ctx context.Context) error {
 		} else if _, statErr := os.Stat("/usr/bin/true"); statErr == nil {
 			truePath = "/usr/bin/true"
 		} else {
-			return fmt.Errorf("cannot probe user namespaces: true executable not found on PATH")
+			return fmt.Errorf("cannot probe user namespaces: true executable not found on PATH: %w", err)
 		}
 	}
 
@@ -48,8 +64,18 @@ func checkUserNamespaces(ctx context.Context) error {
 	cmd.Stdout = &outputBuffer
 	cmd.Stderr = &outputBuffer
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("unprivileged user namespaces are not available for chroot: enable kernel user namespaces")
+	if err := runCommandFunction(ctx, "chroot", cmd, nil); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return err
+		}
+		if isUserNamespaceError(err) {
+			return fmt.Errorf("unprivileged user namespaces are not available for chroot: enable kernel user namespaces: %w", err)
+		}
+		outputMessage := strings.TrimSpace(outputBuffer.String())
+		if outputMessage != "" {
+			return fmt.Errorf("cannot probe user namespaces: %s: %w", outputMessage, err)
+		}
+		return fmt.Errorf("cannot probe user namespaces: %w", err)
 	}
 
 	return nil

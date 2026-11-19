@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 )
 
 var appleContainerOperatingSystem = runtime.GOOS
@@ -59,7 +60,11 @@ func (s *appleContainerSandbox) Usable(ctx context.Context) error {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			return err
 		}
-		return fmt.Errorf("apple-container service is not running: start the service with '%s system start'", executable)
+		outputMessage := strings.TrimSpace(outputBuffer.String())
+		if outputMessage != "" {
+			return fmt.Errorf("apple-container service is not running: start the service with '%s system start': %s: %w", executable, outputMessage, err)
+		}
+		return fmt.Errorf("apple-container service is not running: start the service with '%s system start': %w", executable, err)
 	}
 
 	return nil

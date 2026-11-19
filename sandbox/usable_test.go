@@ -248,7 +248,7 @@ func TestFirstUsableHonoursWithExecutable(t *testing.T) {
 	})
 }
 
-func TestDockerUsableEngineNotResponding(t *testing.T) {
+func TestDockerUsable(t *testing.T) {
 	oldLookPath := lookPathFunction
 	defer func() { lookPathFunction = oldLookPath }()
 	lookPathFunction = func(file string) (string, error) {
@@ -262,25 +262,52 @@ func TestDockerUsableEngineNotResponding(t *testing.T) {
 	defer func() { execCommand = oldExecCommand }()
 	execCommand = fakeExecCommand
 
-	t.Setenv("MOCK_BEHAVIOR", "docker_info_error")
-
 	backend, err := New("docker")
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	err = backend.Usable(t.Context())
-	if err == nil {
-		t.Fatal("expected error when docker engine not responding, got nil")
-	}
+	t.Run("EngineNotResponding", func(t *testing.T) {
+		t.Setenv("MOCK_BEHAVIOR", "docker_info_error")
 
-	expectedMessage := "docker engine is not responding: start the Docker service or verify permissions"
-	if !strings.Contains(err.Error(), expectedMessage) {
-		t.Errorf("expected error %q, got %q", expectedMessage, err.Error())
-	}
+		err := backend.Usable(t.Context())
+		if err == nil {
+			t.Fatal("expected error when docker engine not responding, got nil")
+		}
+
+		expectedMessage := "docker engine is not responding: start the Docker service or verify permissions"
+		if !strings.Contains(err.Error(), expectedMessage) || !strings.Contains(err.Error(), "Cannot connect to the Docker daemon") {
+			t.Errorf("expected actionable reason and tool output, got %q", err.Error())
+		}
+		var exitError *ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
+			t.Errorf("expected underlying ExitError with exit code 1, got %v", err)
+		}
+	})
+
+	t.Run("UnrelatedFailure", func(t *testing.T) {
+		t.Setenv("MOCK_BEHAVIOR", "docker_info_permission_denied")
+
+		err := backend.Usable(t.Context())
+		if err == nil {
+			t.Fatal("expected error when docker fails with permission denied, got nil")
+		}
+
+		expectedMessage := "docker engine is not responding: start the Docker service or verify permissions"
+		if !strings.Contains(err.Error(), expectedMessage) || !strings.Contains(err.Error(), "permission denied while trying to connect") {
+			t.Errorf("expected actionable reason and tool output, got %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "Cannot connect to the Docker daemon") {
+			t.Errorf("expected unrelated failure to report its own message, got %q", err.Error())
+		}
+		var exitError *ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
+			t.Errorf("expected underlying ExitError with exit code 1, got %v", err)
+		}
+	})
 }
 
-func TestAppleContainerUsableServiceNotRunning(t *testing.T) {
+func TestAppleContainerUsable(t *testing.T) {
 	oldLookPath := lookPathFunction
 	defer func() { lookPathFunction = oldLookPath }()
 	lookPathFunction = func(file string) (string, error) {
@@ -298,22 +325,49 @@ func TestAppleContainerUsableServiceNotRunning(t *testing.T) {
 	defer func() { execCommand = oldExecCommand }()
 	execCommand = fakeExecCommand
 
-	t.Setenv("MOCK_BEHAVIOR", "container_service_error")
-
 	backend, err := New("apple-container")
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	err = backend.Usable(t.Context())
-	if err == nil {
-		t.Fatal("expected error when apple-container service is not running, got nil")
-	}
+	t.Run("ServiceNotRunning", func(t *testing.T) {
+		t.Setenv("MOCK_BEHAVIOR", "container_service_error")
 
-	expectedMessage := "apple-container service is not running: start the service with 'container system start'"
-	if !strings.Contains(err.Error(), expectedMessage) {
-		t.Errorf("expected error %q, got %q", expectedMessage, err.Error())
-	}
+		err := backend.Usable(t.Context())
+		if err == nil {
+			t.Fatal("expected error when apple-container service is not running, got nil")
+		}
+
+		expectedMessage := "apple-container service is not running: start the service with 'container system start'"
+		if !strings.Contains(err.Error(), expectedMessage) || !strings.Contains(err.Error(), "apiserver is not running and not registered with launchd") {
+			t.Errorf("expected actionable reason and tool output, got %q", err.Error())
+		}
+		var exitError *ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
+			t.Errorf("expected underlying ExitError with exit code 1, got %v", err)
+		}
+	})
+
+	t.Run("UnrelatedFailure", func(t *testing.T) {
+		t.Setenv("MOCK_BEHAVIOR", "container_service_unrelated_error")
+
+		err := backend.Usable(t.Context())
+		if err == nil {
+			t.Fatal("expected error when apple-container fails with unrelated error, got nil")
+		}
+
+		expectedMessage := "apple-container service is not running: start the service with 'container system start'"
+		if !strings.Contains(err.Error(), expectedMessage) || !strings.Contains(err.Error(), "unrecognized argument: invalid flag --unknown") {
+			t.Errorf("expected actionable reason and tool output, got %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "apiserver is not running and not registered with launchd") {
+			t.Errorf("expected unrelated failure to report its own message, got %q", err.Error())
+		}
+		var exitError *ExitError
+		if !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
+			t.Errorf("expected underlying ExitError with exit code 1, got %v", err)
+		}
+	})
 }
 
 func TestUsableContextCancellation(t *testing.T) {

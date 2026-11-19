@@ -61,7 +61,11 @@ func (s *dockerSandbox) Usable(ctx context.Context) error {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			return err
 		}
-		return fmt.Errorf("docker engine is not responding: start the Docker service or verify permissions")
+		outputMessage := strings.TrimSpace(outputBuffer.String())
+		if outputMessage != "" {
+			return fmt.Errorf("docker engine is not responding: start the Docker service or verify permissions: %s: %w", outputMessage, err)
+		}
+		return fmt.Errorf("docker engine is not responding: start the Docker service or verify permissions: %w", err)
 	}
 
 	return nil

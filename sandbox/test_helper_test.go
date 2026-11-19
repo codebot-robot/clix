@@ -62,9 +62,21 @@ func TestHelperProcess(t *testing.T) {
 			os.Exit(1)
 		}
 	}
+	if behavior == "docker_info_permission_denied" {
+		if (cmd == "docker" || baseCommand == "docker") && len(args) > 1 && args[1] == "info" {
+			fmt.Fprintf(os.Stderr, "permission denied while trying to connect to the Docker daemon socket\n")
+			os.Exit(1)
+		}
+	}
 	if behavior == "container_service_error" {
 		if (cmd == "container" || baseCommand == "container") && len(args) > 2 && args[1] == "system" && args[2] == "status" {
 			fmt.Fprintf(os.Stderr, "apiserver is not running and not registered with launchd\n")
+			os.Exit(1)
+		}
+	}
+	if behavior == "container_service_unrelated_error" {
+		if (cmd == "container" || baseCommand == "container") && len(args) > 2 && args[1] == "system" && args[2] == "status" {
+			fmt.Fprintf(os.Stderr, "unrecognized argument: invalid flag --unknown\n")
 			os.Exit(1)
 		}
 	}
