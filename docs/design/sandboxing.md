@@ -151,7 +151,20 @@ func main() {
 3. **`chroot`**: Checks that the host is Linux and that unprivileged user namespaces are available for `chroot`.
 4. **`proot`**: Checks that the host is Linux and that `proot` is installed.
 
-Each backend reports whether it is usable on the host via `backend.Usable(ctx)`. When not usable, it returns an actionable, single-sentence reason. If no backend is usable on the host, `FirstUsable` returns an error listing all candidate backends tried and why each was not usable. Individual backends can also be checked by name using `sandbox.CheckUsable(ctx, backendName, options...)`.
+Each backend reports whether it is usable on the host via `backend.Usable(ctx)`. When not usable, it returns an actionable, single-sentence reason.
+
+Callers can state what the execution will require using `sandbox.WithRequirements(...)`:
+*   `sandbox.RequireMounts`: Requires support for mounting host directories into the sandbox.
+*   `sandbox.RequireReadOnlyMounts`: Requires support for read-only mounts without fallback.
+*   `sandbox.RequireNetworkNone`: Requires support for disabling network access (`network: none`).
+
+The backends declare the following capabilities:
+*   **`docker`**: Supports mounts, read-only mounts, and no network.
+*   **`apple-container`**: Supports mounts and read-only mounts; does not support no network.
+*   **`chroot`**: Supports no network; does not support mounts or read-only mounts.
+*   **`proot`**: Supports mounts; does not support read-only mounts (unless fallback is allowed) or no network.
+
+When requirements are stated, `FirstUsable` skips candidate backends that cannot provide them and moves on to the next. If no candidate backend qualifies, `FirstUsable` returns an error listing every candidate backend tried and, for each, whether it was unusable on this host or usable but lacking a stated requirement. Individual backends can also be checked by name using `sandbox.CheckUsable(ctx, backendName, options...)`.
 
 ### Platform Limits
 

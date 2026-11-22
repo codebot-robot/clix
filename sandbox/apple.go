@@ -70,6 +70,16 @@ func (s *appleContainerSandbox) Usable(ctx context.Context) error {
 	return nil
 }
 
+var appleContainerCapabilities = Capabilities{
+	Mounts:         true,
+	ReadOnlyMounts: true,
+	NetworkNone:    false,
+}
+
+func (s *appleContainerSandbox) Capabilities() Capabilities {
+	return appleContainerCapabilities
+}
+
 func (s *appleContainerSandbox) String() string {
 	return "apple-container"
 }
@@ -79,8 +89,8 @@ func (s *appleContainerSandbox) Run(ctx context.Context, script Config, args []s
 		return fmt.Errorf("command cancelled: %w", err)
 	}
 
-	if script.Network != "" {
-		return fmt.Errorf("network isolation is not supported by the apple-container sandbox")
+	if err := validateConfigCapabilities("apple-container", s.Capabilities(), script); err != nil {
+		return err
 	}
 
 	terminal := shouldAllocateTerminal(options)

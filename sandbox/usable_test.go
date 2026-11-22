@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -451,5 +452,287 @@ func TestCheckUsable(t *testing.T) {
 
 	if err := CheckUsable(t.Context(), "unknown-backend"); err == nil {
 		t.Errorf("expected error for unknown backend, got nil")
+	}
+}
+
+func TestFirstUsableRequirements(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+
+	t.Run("RequireMountsSkipsChrootAndSelectsProot", func(t *testing.T) {
+		oldLookPath := lookPathFunction
+		defer func() { lookPathFunction = oldLookPath }()
+		lookPathFunction = func(file string) (string, error) {
+			if file == "proot" {
+				return "/bin/proot", nil
+			}
+			return "", exec.ErrNotFound
+		}
+
+		oldAppleOperatingSystem := appleContainerOperatingSystem
+		defer func() { appleContainerOperatingSystem = oldAppleOperatingSystem }()
+		appleContainerOperatingSystem = "linux"
+
+		oldCheckUserNamespaces := checkUserNamespacesFunction
+		defer func() { checkUserNamespacesFunction = oldCheckUserNamespaces }()
+		checkUserNamespacesFunction = func(ctx context.Context) error {
+			return nil
+		}
+
+		oldProotOperatingSystem := prootOperatingSystem
+		defer func() { prootOperatingSystem = oldProotOperatingSystem }()
+		prootOperatingSystem = "linux"
+
+		// Without requirements, chroot is returned.
+		backend, err := FirstUsable(t.Context())
+		if err != nil {
+			t.Fatalf("FirstUsable failed: %v", err)
+		}
+		if backend.String() != "chroot" {
+			t.Errorf("expected backend 'chroot' without requirements, got %q", backend.String())
+		}
+
+		// With WithRequirements(RequireMounts), chroot is skipped because it lacks mounts; proot is returned.
+		backend, err = FirstUsable(t.Context(), WithRequirements(RequireMounts))
+		if err != nil {
+			t.Fatalf("FirstUsable(WithRequirements(RequireMounts)) failed: %v", err)
+		}
+		if backend.String() != "proot" {
+			t.Errorf("expected backend 'proot' with WithRequirements(RequireMounts), got %q", backend.String())
+		}
+	})
+
+	t.Run("RequireNetworkNoneSkipsAppleContainer", func(t *testing.T) {
+		oldLookPath := lookPathFunction
+		defer func() { lookPathFunction = oldLookPath }()
+		lookPathFunction = func(file string) (string, error) {
+			if file == "container" {
+				return "/bin/container", nil
+			}
+			return "", exec.ErrNotFound
+		}
+
+		oldAppleOperatingSystem := appleContainerOperatingSystem
+		defer func() { appleContainerOperatingSystem = oldAppleOperatingSystem }()
+		appleContainerOperatingSystem = "darwin"
+
+		oldCheckUserNamespaces := checkUserNamespacesFunction
+		defer func() { checkUserNamespacesFunction = oldCheckUserNamespaces }()
+		checkUserNamespacesFunction = func(ctx context.Context) error {
+			return fmt.Errorf("chroot not usable")
+		}
+
+		oldProotOperatingSystem := prootOperatingSystem
+		defer func() { prootOperatingSystem = oldProotOperatingSystem }()
+		prootOperatingSystem = "darwin"
+
+		// Without requirements, apple-container is returned on darwin.
+		backend, err := FirstUsable(t.Context())
+		if err != nil {
+			t.Fatalf("FirstUsable failed: %v", err)
+		}
+		if backend.String() != "apple-container" {
+			t.Errorf("expected backend 'apple-container', got %q", backend.String())
+		}
+
+		// With RequireNetworkNone, apple-container is skipped because it lacks network isolation.
+		_, err = FirstUsable(t.Context(), WithRequirements(RequireNetworkNone))
+		if err == nil {
+			t.Fatal("expected error when no backend qualifies, got nil")
+		}
+		if !strings.Contains(err.Error(), "- apple-container: does not support no network") {
+			t.Errorf("expected error to indicate apple-container does not support no network, got:\n%s", err.Error())
+		}
+	})
+
+	t.Run("RequireReadOnlyMountsSkipsChrootAndProot", func(t *testing.T) {
+		oldLookPath := lookPathFunction
+		defer func() { lookPathFunction = oldLookPath }()
+		lookPathFunction = func(file string) (string, error) {
+			if file == "proot" {
+				return "/bin/proot", nil
+			}
+			return "", exec.ErrNotFound
+		}
+
+		oldAppleOperatingSystem := appleContainerOperatingSystem
+		defer func() { appleContainerOperatingSystem = oldAppleOperatingSystem }()
+		appleContainerOperatingSystem = "linux"
+
+		oldCheckUserNamespaces := checkUserNamespacesFunction
+		defer func() { checkUserNamespacesFunction = oldCheckUserNamespaces }()
+		checkUserNamespacesFunction = func(ctx context.Context) error {
+			return nil
+		}
+
+		oldProotOperatingSystem := prootOperatingSystem
+		defer func() { prootOperatingSystem = oldProotOperatingSystem }()
+		prootOperatingSystem = "linux"
+
+		_, err := FirstUsable(t.Context(), WithRequirements(RequireReadOnlyMounts))
+		if err == nil {
+			t.Fatal("expected error when no backend qualifies, got nil")
+		}
+		if !strings.Contains(err.Error(), "- chroot: does not support read-only mounts") && !strings.Contains(err.Error(), "- chroot: does not support mounts") {
+			t.Errorf("expected chroot lacking mounts in error, got:\n%s", err.Error())
+		}
+		if !strings.Contains(err.Error(), "- proot: does not support read-only mounts") {
+			t.Errorf("expected proot lacking read-only mounts in error, got:\n%s", err.Error())
+		}
+	})
+
+	t.Run("NothingQualifiesErrorListsUnusableAndLacking", func(t *testing.T) {
+		oldLookPath := lookPathFunction
+		defer func() { lookPathFunction = oldLookPath }()
+		lookPathFunction = func(file string) (string, error) {
+			return "", exec.ErrNotFound
+		}
+
+		oldAppleOperatingSystem := appleContainerOperatingSystem
+		defer func() { appleContainerOperatingSystem = oldAppleOperatingSystem }()
+		appleContainerOperatingSystem = "linux"
+
+		oldCheckUserNamespaces := checkUserNamespacesFunction
+		defer func() { checkUserNamespacesFunction = oldCheckUserNamespaces }()
+		checkUserNamespacesFunction = func(ctx context.Context) error {
+			return nil
+		}
+
+		oldProotOperatingSystem := prootOperatingSystem
+		defer func() { prootOperatingSystem = oldProotOperatingSystem }()
+		prootOperatingSystem = "linux"
+
+		_, err := FirstUsable(t.Context(), WithRequirements(RequireMounts))
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		errorMessage := err.Error()
+		if !strings.Contains(errorMessage, "- docker: docker executable not found") {
+			t.Errorf("expected docker unusable reason, got:\n%s", errorMessage)
+		}
+		if !strings.Contains(errorMessage, "- apple-container: apple-container requires macOS") {
+			t.Errorf("expected apple-container unusable reason, got:\n%s", errorMessage)
+		}
+		if !strings.Contains(errorMessage, "- chroot: does not support mounts") {
+			t.Errorf("expected chroot lacking requirement reason, got:\n%s", errorMessage)
+		}
+		if !strings.Contains(errorMessage, "- proot: proot executable not found") {
+			t.Errorf("expected proot unusable reason, got:\n%s", errorMessage)
+		}
+	})
+}
+
+func TestBackendCapabilitiesMatchRunRefusals(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+
+	oldPrepare := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepare }()
+	prepareRootFSFunction = func(ctx context.Context, image string) (*preparedRootFS, error) {
+		return &preparedRootFS{
+			dir:     t.TempDir(),
+			cleanup: func() {},
+		}, nil
+	}
+
+	expectedCapabilities := map[string]Capabilities{
+		"docker":          {Mounts: true, ReadOnlyMounts: true, NetworkNone: true},
+		"apple-container": {Mounts: true, ReadOnlyMounts: true, NetworkNone: false},
+		"chroot":          {Mounts: false, ReadOnlyMounts: false, NetworkNone: true},
+		"proot":           {Mounts: true, ReadOnlyMounts: false, NetworkNone: false},
+	}
+
+	for _, backendName := range candidateBackends {
+		t.Run(backendName, func(t *testing.T) {
+			backend, err := New(backendName)
+			if err != nil {
+				t.Fatalf("New(%q) failed: %v", backendName, err)
+			}
+			capable, ok := backend.(Capable)
+			if !ok {
+				t.Fatalf("backend %q does not implement Capable", backendName)
+			}
+			capabilities := capable.Capabilities()
+			if capabilities != expectedCapabilities[backendName] {
+				t.Errorf("backend %q capabilities = %+v, expected %+v", backendName, capabilities, expectedCapabilities[backendName])
+			}
+
+			// Mounts
+			mountConfig := Config{
+				Image:  "alpine",
+				Mounts: []Mount{{HostPath: "/tmp", SandboxPath: "/tmp"}},
+			}
+			err = backend.Run(t.Context(), mountConfig, []string{"echo"}, RunOptions{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard})
+			refusesMounts := err != nil && strings.Contains(err.Error(), "mounts are not supported")
+			if capabilities.Mounts && refusesMounts {
+				t.Errorf("backend %s declared Mounts=true but Run refused mounts: %v", backendName, err)
+			}
+			if !capabilities.Mounts && !refusesMounts {
+				t.Errorf("backend %s declared Mounts=false but Run did not refuse mounts: %v", backendName, err)
+			}
+
+			// Read-only Mounts
+			readOnlyMountConfig := Config{
+				Image:  "alpine",
+				Mounts: []Mount{{HostPath: "/tmp", SandboxPath: "/tmp", ReadOnly: true}},
+			}
+			err = backend.Run(t.Context(), readOnlyMountConfig, []string{"echo"}, RunOptions{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard})
+			refusesReadOnlyMounts := err != nil && (strings.Contains(err.Error(), "read-only mounts are not supported") || strings.Contains(err.Error(), "mounts are not supported"))
+			if capabilities.ReadOnlyMounts && refusesReadOnlyMounts {
+				t.Errorf("backend %s declared ReadOnlyMounts=true but Run refused read-only mounts: %v", backendName, err)
+			}
+			if !capabilities.ReadOnlyMounts && !refusesReadOnlyMounts {
+				t.Errorf("backend %s declared ReadOnlyMounts=false but Run did not refuse read-only mounts: %v", backendName, err)
+			}
+
+			// Network None
+			networkNoneConfig := Config{
+				Image:   "alpine",
+				Network: "none",
+			}
+			err = backend.Run(t.Context(), networkNoneConfig, []string{"echo"}, RunOptions{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard})
+			refusesNetworkNone := err != nil && strings.Contains(err.Error(), "network isolation is not supported")
+			if capabilities.NetworkNone && refusesNetworkNone {
+				t.Errorf("backend %s declared NetworkNone=true but Run refused network none: %v", backendName, err)
+			}
+			if !capabilities.NetworkNone && !refusesNetworkNone {
+				t.Errorf("backend %s declared NetworkNone=false but Run did not refuse network none: %v", backendName, err)
+			}
+		})
+	}
+}
+
+func TestCheckUsableRequirements(t *testing.T) {
+	oldLookPath := lookPathFunction
+	defer func() { lookPathFunction = oldLookPath }()
+	lookPathFunction = func(file string) (string, error) {
+		if file == "docker" {
+			return "/bin/docker", nil
+		}
+		return "", exec.ErrNotFound
+	}
+
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = fakeExecCommand
+
+	oldCheckUserNamespaces := checkUserNamespacesFunction
+	defer func() { checkUserNamespacesFunction = oldCheckUserNamespaces }()
+	checkUserNamespacesFunction = func(ctx context.Context) error {
+		return nil
+	}
+
+	// docker supports mounts
+	if err := CheckUsable(t.Context(), "docker", WithRequirements(RequireMounts)); err != nil {
+		t.Errorf("expected docker to satisfy RequireMounts, got %v", err)
+	}
+
+	// chroot does not support mounts
+	if err := CheckUsable(t.Context(), "chroot", WithRequirements(RequireMounts)); err == nil {
+		t.Error("expected error for chroot with WithRequirements(RequireMounts), got nil")
+	} else if !strings.Contains(err.Error(), "chroot does not support mounts") {
+		t.Errorf("expected error mentioning 'chroot does not support mounts', got %v", err)
 	}
 }

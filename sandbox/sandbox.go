@@ -176,11 +176,82 @@ func newExitError(exitCode int) *ExitError {
 	return NewExitError(exitCode)
 }
 
+// Requirement specifies a capability that a sandbox backend must support.
+type Requirement string
+
+const (
+	// RequireMounts requires support for mounting host directories into the container.
+	RequireMounts Requirement = "mounts"
+	// RequireReadOnlyMounts requires support for read-only directory mounts without fallback.
+	RequireReadOnlyMounts Requirement = "read-only mounts"
+	// RequireNetworkNone requires support for disabling network access ("network: none").
+	RequireNetworkNone Requirement = "no network"
+)
+
+// Capabilities describes the features supported by a Sandbox backend.
+type Capabilities struct {
+	// Mounts indicates whether the backend supports host directory mounts.
+	Mounts bool
+	// ReadOnlyMounts indicates whether the backend supports read-only directory mounts without fallback.
+	ReadOnlyMounts bool
+	// NetworkNone indicates whether the backend supports disabling network access ("network: none").
+	NetworkNone bool
+}
+
+// Supports reports whether the capabilities satisfy the given requirement.
+func (capabilities Capabilities) Supports(requirement Requirement) bool {
+	switch requirement {
+	case RequireMounts:
+		return capabilities.Mounts
+	case RequireReadOnlyMounts:
+		return capabilities.ReadOnlyMounts
+	case RequireNetworkNone:
+		return capabilities.NetworkNone
+	default:
+		return false
+	}
+}
+
+// Capable is an interface implemented by sandbox backends that declare their capabilities.
+type Capable interface {
+	Capabilities() Capabilities
+}
+
+// BackendCapabilities returns the capabilities of the given sandbox backend,
+// or empty capabilities if the backend does not declare them.
+func BackendCapabilities(sandbox Sandbox) Capabilities {
+	if capable, ok := sandbox.(Capable); ok {
+		return capable.Capabilities()
+	}
+	return Capabilities{}
+}
+
+func validateConfigCapabilities(backendName string, capabilities Capabilities, config Config) error {
+	if !capabilities.NetworkNone && config.Network != "" {
+		return fmt.Errorf("network isolation is not supported by the %s sandbox", backendName)
+	}
+	if capabilities.NetworkNone && config.Network != "" && config.Network != "none" {
+		return fmt.Errorf("network mode %q is not supported by the %s sandbox", config.Network, backendName)
+	}
+	if !capabilities.Mounts && len(config.Mounts) > 0 {
+		return fmt.Errorf("mounts are not supported in %s sandbox", backendName)
+	}
+	if !capabilities.ReadOnlyMounts {
+		for _, mount := range config.Mounts {
+			if mount.ReadOnly && !mount.WritableFallback {
+				return fmt.Errorf("read-only mounts are not supported by the %s sandbox", backendName)
+			}
+		}
+	}
+	return nil
+}
+
 // Option configures a Sandbox backend.
 type Option func(*sandboxOptions)
 
 type sandboxOptions struct {
-	executables map[string]string
+	executables  map[string]string
+	requirements []Requirement
 }
 
 // WithExecutable specifies the executable for the named backend to run instead of
@@ -195,6 +266,14 @@ func WithExecutable(backend string, executable string) Option {
 			backend = "docker"
 		}
 		options.executables[backend] = executable
+	}
+}
+
+// WithRequirements specifies requirements that candidate backends must satisfy.
+// Backends lacking any stated requirement will be skipped by FirstUsable.
+func WithRequirements(requirements ...Requirement) Option {
+	return func(options *sandboxOptions) {
+		options.requirements = append(options.requirements, requirements...)
 	}
 }
 
@@ -240,15 +319,20 @@ var candidateBackends = []string{
 // evaluating backends in the following documented order: "docker", "apple-container",
 // "chroot", and "proot".
 //
-// Options (such as WithExecutable) are applied to candidate backends during evaluation.
-// When no backend is usable on this host, FirstUsable returns an error listing
-// every backend tried and why each was not usable.
+// Options (such as WithExecutable or WithRequirements) are applied to candidate backends during evaluation.
+// When no backend is usable on this host or qualifies for the stated requirements,
+// FirstUsable returns an error listing every backend tried and why each did not qualify.
 func FirstUsable(ctx context.Context, options ...Option) (Sandbox, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("command cancelled: %w", err)
+	}
+
+	var backendOptions sandboxOptions
+	for _, option := range options {
+		option(&backendOptions)
 	}
 
 	var failureReasons []string
@@ -274,6 +358,22 @@ func FirstUsable(ctx context.Context, options ...Option) (Sandbox, error) {
 			failureReasons = append(failureReasons, fmt.Sprintf("- %s: %v", backendName, err))
 			continue
 		}
+
+		if capable, ok := backend.(Capable); ok {
+			capabilities := capable.Capabilities()
+			var missingRequirement Requirement
+			for _, requirement := range backendOptions.requirements {
+				if !capabilities.Supports(requirement) {
+					missingRequirement = requirement
+					break
+				}
+			}
+			if missingRequirement != "" {
+				failureReasons = append(failureReasons, fmt.Sprintf("- %s: does not support %s", backendName, missingRequirement))
+				continue
+			}
+		}
+
 		return backend, nil
 	}
 
@@ -286,11 +386,26 @@ func CheckUsable(ctx context.Context, backendName string, options ...Option) err
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var backendOptions sandboxOptions
+	for _, option := range options {
+		option(&backendOptions)
+	}
 	backend, err := New(backendName, options...)
 	if err != nil {
 		return err
 	}
-	return backend.Usable(ctx)
+	if err := backend.Usable(ctx); err != nil {
+		return err
+	}
+	if capable, ok := backend.(Capable); ok {
+		capabilities := capable.Capabilities()
+		for _, requirement := range backendOptions.requirements {
+			if !capabilities.Supports(requirement) {
+				return fmt.Errorf("%s does not support %s", backendName, requirement)
+			}
+		}
+	}
+	return nil
 }
 
 type preparedRootFS struct {

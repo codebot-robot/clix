@@ -22,8 +22,6 @@ import (
 	"runtime"
 )
 
-type chrootSandbox struct{}
-
 var checkUserNamespacesFunction = func(ctx context.Context) error {
 	return fmt.Errorf("chroot sandbox is not supported on %s", runtime.GOOS)
 }
@@ -38,13 +36,9 @@ func (s *chrootSandbox) Usable(ctx context.Context) error {
 	return checkUserNamespacesFunction(ctx)
 }
 
-func (s *chrootSandbox) String() string {
-	return "chroot"
-}
-
 func (s *chrootSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
-	if script.Network != "" && script.Network != "none" {
-		return fmt.Errorf("network mode %q is not supported by the chroot sandbox", script.Network)
+	if err := validateConfigCapabilities("chroot", s.Capabilities(), script); err != nil {
+		return err
 	}
 	return fmt.Errorf("chroot sandbox is not supported on %s", runtime.GOOS)
 }

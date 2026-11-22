@@ -50,6 +50,16 @@ func (s *prootSandbox) Usable(ctx context.Context) error {
 	return nil
 }
 
+var prootCapabilities = Capabilities{
+	Mounts:         true,
+	ReadOnlyMounts: false,
+	NetworkNone:    false,
+}
+
+func (s *prootSandbox) Capabilities() Capabilities {
+	return prootCapabilities
+}
+
 func (s *prootSandbox) String() string {
 	return "proot"
 }
@@ -59,18 +69,12 @@ func (s *prootSandbox) Run(ctx context.Context, script Config, args []string, op
 		return fmt.Errorf("command cancelled: %w", err)
 	}
 
-	if script.Network != "" {
-		return fmt.Errorf("network isolation is not supported by the proot sandbox")
+	if err := validateConfigCapabilities("proot", s.Capabilities(), script); err != nil {
+		return err
 	}
 
 	if err := validateMounts(script.Mounts, ":"); err != nil {
 		return err
-	}
-
-	for _, mount := range script.Mounts {
-		if mount.ReadOnly && !mount.WritableFallback {
-			return fmt.Errorf("read-only mounts are not supported by the proot sandbox")
-		}
 	}
 
 	rootPath := script.Image
