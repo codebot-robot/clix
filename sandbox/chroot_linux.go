@@ -24,8 +24,6 @@ import (
 	"syscall"
 )
 
-type chrootSandbox struct{}
-
 // isUserNamespaceError reports whether err indicates that user namespaces are
 // unavailable or not permitted on this kernel/host (see clone(2) and user_namespaces(7)):
 //   - EPERM: unprivileged user namespaces disabled (e.g. kernel.unprivileged_userns_clone = 0),
@@ -94,21 +92,13 @@ func (s *chrootSandbox) Usable(ctx context.Context) error {
 	return checkUserNamespacesFunction(ctx)
 }
 
-func (s *chrootSandbox) String() string {
-	return "chroot"
-}
-
 func (s *chrootSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("command cancelled: %w", err)
 	}
 
-	if script.Network != "" && script.Network != "none" {
-		return fmt.Errorf("network mode %q is not supported by the chroot sandbox", script.Network)
-	}
-
-	if len(script.Mounts) > 0 {
-		return fmt.Errorf("mounts are not supported in chroot sandbox")
+	if err := validateConfigCapabilities("chroot", s.Capabilities(), script); err != nil {
+		return err
 	}
 
 	rootPath := script.Image

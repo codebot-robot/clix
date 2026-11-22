@@ -71,6 +71,16 @@ func (s *dockerSandbox) Usable(ctx context.Context) error {
 	return nil
 }
 
+var dockerCapabilities = Capabilities{
+	Mounts:         true,
+	ReadOnlyMounts: true,
+	NetworkNone:    true,
+}
+
+func (s *dockerSandbox) Capabilities() Capabilities {
+	return dockerCapabilities
+}
+
 func (s *dockerSandbox) String() string {
 	return "docker"
 }
@@ -147,6 +157,9 @@ func stopDockerContainer(executable string, containerName string) error {
 }
 
 func buildDockerArgs(script Config, args []string, terminal bool) ([]string, error) {
+	if err := validateConfigCapabilities("docker", dockerCapabilities, script); err != nil {
+		return nil, err
+	}
 	if err := validateMounts(script.Mounts, ":"); err != nil {
 		return nil, err
 	}
@@ -158,8 +171,6 @@ func buildDockerArgs(script Config, args []string, terminal bool) ([]string, err
 
 	if script.Network == "none" {
 		cmdArgs = append(cmdArgs, "--network", "none")
-	} else if script.Network != "" {
-		return nil, fmt.Errorf("network mode %q is not supported by the docker sandbox", script.Network)
 	}
 
 	for _, mount := range script.Mounts {
