@@ -13,6 +13,12 @@ This document describes the design for running tools in a sandbox environment (D
 *   **Environment.** A sandboxed tool receives only the variables listed in the script's `env:` block, plus whatever the container image itself defines, plus a minimal base that a backend must supply for the tool to run at all (`PATH`, `HOME`, and `TERM` when attached to a terminal). The host environment is never inherited or passed through, on any backend. There is no syntax for "pass this host variable through"; a value in `env:` is a literal.
 *   **Filesystem.** A sandboxed tool sees the image's filesystem plus only the host directories listed in `mounts:`.
 *   **Network.** By default, a sandboxed tool keeps the network access of the host environment. A run can declare `network: none` to request that no network access be available. A backend that cannot honour this must fail with an error naming the backend and the reason. The `docker` and `chroot` backends enforce `network: none`; `apple-container` and `proot` reject runs that request it.
+*   **Command resolution.** The command to run is chosen identically across all backends (`docker`, `apple-container`, `chroot`, `proot`):
+    *   If `entrypoint:` is set in the script configuration, it replaces the image's `ENTRYPOINT`. Any caller arguments follow it. The image's `CMD` is ignored.
+    *   If `entrypoint:` is empty:
+        *   When arguments are given, the image's `ENTRYPOINT` (if present) is executed with the caller's arguments in place of the image's `CMD`. An image with no `ENTRYPOINT` runs the arguments directly as the command.
+        *   When no arguments are given, the image's configured `ENTRYPOINT` followed by its `CMD` is executed (or whichever of the two is defined).
+        *   If neither `entrypoint:`, caller arguments, nor the image's `ENTRYPOINT` or `CMD` are present, execution fails with an error indicating that no command was specified.
 *   **Backends.** The contract is the same for every backend selected by `CLIX_SANDBOX` (`docker`, the default; `apple-container`; `chroot`; `proot`). A backend that cannot honour part of the contract must fail with an error rather than run with less isolation.
 *   **Not sandboxed today.** A script with `go:` and no `mounts:` is run with `go run` directly on the host (`runGo` in `main.go`), with the host environment and filesystem. This is the current behaviour of the prototype.
 

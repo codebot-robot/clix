@@ -370,19 +370,25 @@ func prepareRootFS(ctx context.Context, imageRef string) (*preparedRootFS, error
 var prepareRootFSFunction = prepareRootFS
 
 func resolveRootFSCommand(entrypoint string, args []string, rootFS *preparedRootFS) (string, []string, error) {
+	var cmdArgs []string
 	if entrypoint != "" {
-		return entrypoint, append([]string{entrypoint}, args...), nil
-	}
-	if len(args) > 0 {
-		return args[0], args, nil
-	}
-	if rootFS != nil {
-		imageArguments := append(slices.Clone(rootFS.entrypoint), rootFS.cmd...)
-		if len(imageArguments) > 0 {
-			return imageArguments[0], imageArguments, nil
+		cmdArgs = append([]string{entrypoint}, args...)
+	} else {
+		var imageEntrypoint, imageCmd []string
+		if rootFS != nil {
+			imageEntrypoint = rootFS.entrypoint
+			imageCmd = rootFS.cmd
+		}
+		if len(args) > 0 {
+			cmdArgs = append(slices.Clone(imageEntrypoint), args...)
+		} else {
+			cmdArgs = append(slices.Clone(imageEntrypoint), imageCmd...)
 		}
 	}
-	return "", nil, fmt.Errorf("no command specified, no entrypoint in script, and no ENTRYPOINT or CMD in image")
+	if len(cmdArgs) == 0 {
+		return "", nil, fmt.Errorf("no command specified, no entrypoint in script, and no ENTRYPOINT or CMD in image")
+	}
+	return cmdArgs[0], cmdArgs, nil
 }
 
 func buildSandboxEnv(imageEnv []string, scriptEnv []EnvVar) []string {

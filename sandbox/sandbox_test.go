@@ -378,22 +378,208 @@ func TestBackendArgumentsNoEntrypoint(t *testing.T) {
 	})
 }
 
+func TestBackendArgumentsArgsWithoutEntrypoint(t *testing.T) {
+	script := Config{Image: "my-image:v1"}
+	args := []string{"caller-arg1", "caller-arg2"}
+	expectedCommandLine := []string{"/bin/mytool", "caller-arg1", "caller-arg2"}
+
+	oldPrepareRootFS := prepareRootFSFunction
+	defer func() { prepareRootFSFunction = oldPrepareRootFS }()
+	prepareRootFSFunction = func(ctx context.Context, imageRef string) (*preparedRootFS, error) {
+		return &preparedRootFS{
+			dir: "/mock/rootfs", entrypoint: []string{"/bin/mytool"},
+			cmd: []string{"default", "cmd"}, workingDir: "/app", cleanup: func() {},
+		}, nil
+	}
+
+	t.Run("Docker", func(t *testing.T) {
+		cmdArgs, err := buildDockerArgs(script, args, false)
+		if err != nil {
+			t.Fatalf("buildDockerArgs failed: %v", err)
+		}
+		if slices.Contains(cmdArgs, "--entrypoint") {
+			t.Errorf("expected no --entrypoint in docker args, got %v", cmdArgs)
+		}
+		if !slices.Equal(cmdArgs[len(cmdArgs)-3:], []string{"my-image:v1", "caller-arg1", "caller-arg2"}) {
+			t.Errorf("expected image and caller args at end of docker args, got %v", cmdArgs)
+		}
+	})
+
+	t.Run("Proot", func(t *testing.T) {
+		var capturedArgs []string
+		oldExecCommand := execCommand
+		defer func() { execCommand = oldExecCommand }()
+		execCommand = func(name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return fakeExecCommand(name, args...)
+		}
+
+		sandbox := &prootSandbox{}
+		var stdout, stderr bytes.Buffer
+		if err := sandbox.Run(t.Context(), script, args, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
+			t.Fatalf("sandbox.Run failed: %v", err)
+		}
+		expected := append([]string{"-r", "/mock/rootfs", "-w", "/app"}, expectedCommandLine...)
+		if !slices.Equal(capturedArgs, expected) {
+			t.Errorf("got %v, want %v", capturedArgs, expected)
+		}
+	})
+
+	t.Run("Chroot", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("skipping chroot test on non-linux platform")
+		}
+		oldRunCommand := runCommandFunction
+		defer func() { runCommandFunction = oldRunCommand }()
+		var capturedCommand *exec.Cmd
+		runCommandFunction = func(ctx context.Context, backendName string, cmd *exec.Cmd, stopAction func() error) error {
+			capturedCommand = cmd
+			return nil
+		}
+
+		sandbox := &chrootSandbox{}
+		var stdout, stderr bytes.Buffer
+		if err := sandbox.Run(t.Context(), script, args, RunOptions{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}); err != nil {
+			t.Fatalf("sandbox.Run failed: %v", err)
+		}
+		if capturedCommand == nil || !slices.Equal(capturedCommand.Args, expectedCommandLine) {
+			t.Errorf("got args %v, want %v", capturedCommand.Args, expectedCommandLine)
+		}
+		if capturedCommand.Dir != "/app" {
+			t.Errorf("got cmd.Dir %q, want %q", capturedCommand.Dir, "/app")
+		}
+	})
+}
+
 func TestResolveRootFSCommand(t *testing.T) {
 	testCases := []struct {
 		name              string
 		entrypoint        string
 		args              []string
 		rootFS            *preparedRootFS
+		dockerRuns        string
 		expectedCommand   string
 		expectedArguments []string
 		expectedMessage   string
 	}{
-		{"ConfigEntrypointOverrides", "/bin/custom", []string{"a"}, &preparedRootFS{entrypoint: []string{"/bin/image"}}, "/bin/custom", []string{"/bin/custom", "a"}, ""},
-		{"ArgsProvideCommand", "", []string{"/bin/echo", "hi"}, &preparedRootFS{entrypoint: []string{"/bin/image"}}, "/bin/echo", []string{"/bin/echo", "hi"}, ""},
-		{"ImageEntrypointAndCmd", "", nil, &preparedRootFS{entrypoint: []string{"/bin/app"}, cmd: []string{"serve"}}, "/bin/app", []string{"/bin/app", "serve"}, ""},
-		{"ImageEntrypointOnly", "", nil, &preparedRootFS{entrypoint: []string{"/bin/app"}}, "/bin/app", []string{"/bin/app"}, ""},
-		{"ImageCmdOnly", "", nil, &preparedRootFS{cmd: []string{"/bin/sh"}}, "/bin/sh", []string{"/bin/sh"}, ""},
-		{"NoCommandAndNoEntrypoint", "", nil, &preparedRootFS{}, "", nil, "no command specified, no entrypoint in script, and no ENTRYPOINT or CMD in image"},
+		// Combinations with Config.Entrypoint set: overrides image ENTRYPOINT and CMD.
+		{
+			name:       "ConfigEntrypoint_Args_ImageEntrypoint_ImageCmd",
+			entrypoint: "/bin/custom", args: []string{"arg1", "arg2"},
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/image"}, cmd: []string{"cmd1", "cmd2"}},
+			dockerRuns:      "custom entrypoint followed by caller args: /bin/custom arg1 arg2",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom", "arg1", "arg2"},
+		},
+		{
+			name:       "ConfigEntrypoint_Args_ImageEntrypoint_NoImageCmd",
+			entrypoint: "/bin/custom", args: []string{"arg1", "arg2"},
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/image"}},
+			dockerRuns:      "custom entrypoint followed by caller args: /bin/custom arg1 arg2",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom", "arg1", "arg2"},
+		},
+		{
+			name:       "ConfigEntrypoint_Args_NoImageEntrypoint_ImageCmd",
+			entrypoint: "/bin/custom", args: []string{"arg1", "arg2"},
+			rootFS:          &preparedRootFS{cmd: []string{"cmd1", "cmd2"}},
+			dockerRuns:      "custom entrypoint followed by caller args: /bin/custom arg1 arg2",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom", "arg1", "arg2"},
+		},
+		{
+			name:       "ConfigEntrypoint_Args_NoImageEntrypoint_NoImageCmd",
+			entrypoint: "/bin/custom", args: []string{"arg1", "arg2"},
+			rootFS:          &preparedRootFS{},
+			dockerRuns:      "custom entrypoint followed by caller args: /bin/custom arg1 arg2",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom", "arg1", "arg2"},
+		},
+		{
+			name:       "ConfigEntrypoint_NoArgs_ImageEntrypoint_ImageCmd",
+			entrypoint: "/bin/custom", args: nil,
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/image"}, cmd: []string{"cmd1", "cmd2"}},
+			dockerRuns:      "custom entrypoint alone: /bin/custom",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom"},
+		},
+		{
+			name:       "ConfigEntrypoint_NoArgs_ImageEntrypoint_NoImageCmd",
+			entrypoint: "/bin/custom", args: nil,
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/image"}},
+			dockerRuns:      "custom entrypoint alone: /bin/custom",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom"},
+		},
+		{
+			name:       "ConfigEntrypoint_NoArgs_NoImageEntrypoint_ImageCmd",
+			entrypoint: "/bin/custom", args: nil,
+			rootFS:          &preparedRootFS{cmd: []string{"cmd1", "cmd2"}},
+			dockerRuns:      "custom entrypoint alone: /bin/custom",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom"},
+		},
+		{
+			name:       "ConfigEntrypoint_NoArgs_NoImageEntrypoint_NoImageCmd",
+			entrypoint: "/bin/custom", args: nil,
+			rootFS:          &preparedRootFS{},
+			dockerRuns:      "custom entrypoint alone: /bin/custom",
+			expectedCommand: "/bin/custom", expectedArguments: []string{"/bin/custom"},
+		},
+
+		// Combinations with Config.Entrypoint empty, caller args provided:
+		// image ENTRYPOINT runs caller args; without image ENTRYPOINT, args run as command.
+		{
+			name:       "NoConfigEntrypoint_Args_ImageEntrypoint_ImageCmd",
+			entrypoint: "", args: []string{"arg1", "arg2"},
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/image"}, cmd: []string{"cmd1", "cmd2"}},
+			dockerRuns:      "image ENTRYPOINT followed by caller args in place of image CMD: /bin/image arg1 arg2",
+			expectedCommand: "/bin/image", expectedArguments: []string{"/bin/image", "arg1", "arg2"},
+		},
+		{
+			name:       "NoConfigEntrypoint_Args_ImageEntrypoint_NoImageCmd",
+			entrypoint: "", args: []string{"arg1", "arg2"},
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/image"}},
+			dockerRuns:      "image ENTRYPOINT followed by caller args: /bin/image arg1 arg2",
+			expectedCommand: "/bin/image", expectedArguments: []string{"/bin/image", "arg1", "arg2"},
+		},
+		{
+			name:       "NoConfigEntrypoint_Args_NoImageEntrypoint_ImageCmd",
+			entrypoint: "", args: []string{"/bin/echo", "hi"},
+			rootFS:          &preparedRootFS{cmd: []string{"cmd1", "cmd2"}},
+			dockerRuns:      "caller args replacing image CMD: /bin/echo hi",
+			expectedCommand: "/bin/echo", expectedArguments: []string{"/bin/echo", "hi"},
+		},
+		{
+			name:       "NoConfigEntrypoint_Args_NoImageEntrypoint_NoImageCmd",
+			entrypoint: "", args: []string{"/bin/echo", "hi"},
+			rootFS:          &preparedRootFS{},
+			dockerRuns:      "caller args as command: /bin/echo hi",
+			expectedCommand: "/bin/echo", expectedArguments: []string{"/bin/echo", "hi"},
+		},
+
+		// Combinations with Config.Entrypoint empty and no caller args:
+		// runs image ENTRYPOINT and/or CMD; errors if neither is present.
+		{
+			name:       "NoConfigEntrypoint_NoArgs_ImageEntrypoint_ImageCmd",
+			entrypoint: "", args: nil,
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/app"}, cmd: []string{"serve", "--port=80"}},
+			dockerRuns:      "image ENTRYPOINT followed by image CMD: /bin/app serve --port=80",
+			expectedCommand: "/bin/app", expectedArguments: []string{"/bin/app", "serve", "--port=80"},
+		},
+		{
+			name:       "NoConfigEntrypoint_NoArgs_ImageEntrypoint_NoImageCmd",
+			entrypoint: "", args: nil,
+			rootFS:          &preparedRootFS{entrypoint: []string{"/bin/app"}},
+			dockerRuns:      "image ENTRYPOINT alone: /bin/app",
+			expectedCommand: "/bin/app", expectedArguments: []string{"/bin/app"},
+		},
+		{
+			name:       "NoConfigEntrypoint_NoArgs_NoImageEntrypoint_ImageCmd",
+			entrypoint: "", args: nil,
+			rootFS:          &preparedRootFS{cmd: []string{"/bin/sh"}},
+			dockerRuns:      "image CMD alone: /bin/sh",
+			expectedCommand: "/bin/sh", expectedArguments: []string{"/bin/sh"},
+		},
+		{
+			name:       "NoConfigEntrypoint_NoArgs_NoImageEntrypoint_NoImageCmd",
+			entrypoint: "", args: nil, rootFS: &preparedRootFS{},
+			dockerRuns:      "fails with error: nothing to run",
+			expectedMessage: "no command specified, no entrypoint in script, and no ENTRYPOINT or CMD in image",
+		},
 	}
 
 	for _, testCase := range testCases {
