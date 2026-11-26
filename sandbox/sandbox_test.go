@@ -697,10 +697,6 @@ func TestUnsupportedBackendsRejectNetworkIsolation(t *testing.T) {
 		expectedMessage string
 	}{
 		{
-			backendName:     "apple-container",
-			expectedMessage: "network isolation is not supported by the apple-container sandbox",
-		},
-		{
 			backendName:     "proot",
 			expectedMessage: "network isolation is not supported by the proot sandbox",
 		},
@@ -736,6 +732,10 @@ func TestBackendsRejectUnsupportedNetworkMode(t *testing.T) {
 		{
 			backendName:     "docker",
 			expectedMessage: `network mode "custom" is not supported by the docker sandbox`,
+		},
+		{
+			backendName:     "apple-container",
+			expectedMessage: `network mode "custom" is not supported by the apple-container sandbox`,
 		},
 		{
 			backendName:     "chroot",

@@ -503,7 +503,7 @@ func TestFirstUsableRequirements(t *testing.T) {
 		}
 	})
 
-	t.Run("RequireNetworkNoneSkipsAppleContainer", func(t *testing.T) {
+	t.Run("RequireNetworkNoneSelectsAppleContainer", func(t *testing.T) {
 		oldLookPath := lookPathFunction
 		defer func() { lookPathFunction = oldLookPath }()
 		lookPathFunction = func(file string) (string, error) {
@@ -536,13 +536,46 @@ func TestFirstUsableRequirements(t *testing.T) {
 			t.Errorf("expected backend 'apple-container', got %q", backend.String())
 		}
 
-		// With RequireNetworkNone, apple-container is skipped because it lacks network isolation.
-		_, err = FirstUsable(t.Context(), WithRequirements(RequireNetworkNone))
+		// With RequireNetworkNone, apple-container is selected because it supports network isolation.
+		backend, err = FirstUsable(t.Context(), WithRequirements(RequireNetworkNone))
+		if err != nil {
+			t.Fatalf("FirstUsable(WithRequirements(RequireNetworkNone)) failed: %v", err)
+		}
+		if backend.String() != "apple-container" {
+			t.Errorf("expected backend 'apple-container', got %q", backend.String())
+		}
+	})
+
+	t.Run("RequireNetworkNoneSkipsProot", func(t *testing.T) {
+		oldLookPath := lookPathFunction
+		defer func() { lookPathFunction = oldLookPath }()
+		lookPathFunction = func(file string) (string, error) {
+			if file == "proot" {
+				return "/bin/proot", nil
+			}
+			return "", exec.ErrNotFound
+		}
+
+		oldAppleOperatingSystem := appleContainerOperatingSystem
+		defer func() { appleContainerOperatingSystem = oldAppleOperatingSystem }()
+		appleContainerOperatingSystem = "linux"
+
+		oldCheckUserNamespaces := checkUserNamespacesFunction
+		defer func() { checkUserNamespacesFunction = oldCheckUserNamespaces }()
+		checkUserNamespacesFunction = func(ctx context.Context) error {
+			return fmt.Errorf("chroot not usable")
+		}
+
+		oldProotOperatingSystem := prootOperatingSystem
+		defer func() { prootOperatingSystem = oldProotOperatingSystem }()
+		prootOperatingSystem = "linux"
+
+		_, err := FirstUsable(t.Context(), WithRequirements(RequireNetworkNone))
 		if err == nil {
 			t.Fatal("expected error when no backend qualifies, got nil")
 		}
-		if !strings.Contains(err.Error(), "- apple-container: does not support no network") {
-			t.Errorf("expected error to indicate apple-container does not support no network, got:\n%s", err.Error())
+		if !strings.Contains(err.Error(), "- proot: does not support no network") {
+			t.Errorf("expected error to indicate proot does not support no network, got:\n%s", err.Error())
 		}
 	})
 
@@ -639,7 +672,7 @@ func TestBackendCapabilitiesMatchRunRefusals(t *testing.T) {
 
 	expectedCapabilities := map[string]Capabilities{
 		"docker":          {Mounts: true, ReadOnlyMounts: true, NetworkNone: true},
-		"apple-container": {Mounts: true, ReadOnlyMounts: true, NetworkNone: false},
+		"apple-container": {Mounts: true, ReadOnlyMounts: true, NetworkNone: true},
 		"chroot":          {Mounts: false, ReadOnlyMounts: false, NetworkNone: true},
 		"proot":           {Mounts: true, ReadOnlyMounts: false, NetworkNone: false},
 	}

@@ -15,6 +15,8 @@
 package sandbox
 
 import (
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -130,6 +132,53 @@ func TestBuildAppleContainerArgs(t *testing.T) {
 				if arg == "-v" {
 					t.Errorf("Unexpected '-v' in cmdArgs: %v", cmdArgs)
 				}
+			}
+		})
+	}
+
+	networkTests := []struct {
+		name              string
+		network           string
+		expectedArguments []string
+		expectError       bool
+	}{
+		{name: "Default network", network: ""},
+		{name: "None network", network: "none", expectedArguments: []string{"--network", "none"}},
+		{name: "Unsupported network", network: "custom", expectError: true},
+	}
+
+	for _, testCase := range networkTests {
+		t.Run(testCase.name, func(t *testing.T) {
+			config := Config{
+				Image:   "alpine",
+				Network: testCase.network,
+			}
+			commandArguments, err := buildAppleContainerArgs(config, args, false)
+			if testCase.expectError {
+				if err == nil {
+					t.Fatalf("expected error for network %q, got nil", testCase.network)
+				}
+				expectedMessage := `network mode "custom" is not supported by the apple-container sandbox`
+				if !strings.Contains(err.Error(), expectedMessage) {
+					t.Errorf("got error %q, want %q", err.Error(), expectedMessage)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildAppleContainerArgs failed: %v", err)
+			}
+			if len(testCase.expectedArguments) == 0 {
+				if slices.Contains(commandArguments, "--network") {
+					t.Errorf("unexpected --network in %v", commandArguments)
+				}
+				return
+			}
+			flagIndex := slices.Index(commandArguments, testCase.expectedArguments[0])
+			imageIndex := slices.Index(commandArguments, config.Image)
+			if flagIndex == -1 || flagIndex+1 >= len(commandArguments) || commandArguments[flagIndex+1] != testCase.expectedArguments[1] {
+				t.Errorf("expected consecutive args %v in %v", testCase.expectedArguments, commandArguments)
+			} else if imageIndex != -1 && flagIndex > imageIndex {
+				t.Errorf("expected %v before image %q in %v", testCase.expectedArguments, config.Image, commandArguments)
 			}
 		})
 	}

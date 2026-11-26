@@ -73,7 +73,7 @@ func (s *appleContainerSandbox) Usable(ctx context.Context) error {
 var appleContainerCapabilities = Capabilities{
 	Mounts:         true,
 	ReadOnlyMounts: true,
-	NetworkNone:    false,
+	NetworkNone:    true,
 }
 
 func (s *appleContainerSandbox) Capabilities() Capabilities {
@@ -87,10 +87,6 @@ func (s *appleContainerSandbox) String() string {
 func (s *appleContainerSandbox) Run(ctx context.Context, script Config, args []string, options RunOptions) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("command cancelled: %w", err)
-	}
-
-	if err := validateConfigCapabilities("apple-container", s.Capabilities(), script); err != nil {
-		return err
 	}
 
 	terminal := shouldAllocateTerminal(options)
@@ -120,6 +116,9 @@ func (s *appleContainerSandbox) Run(ctx context.Context, script Config, args []s
 }
 
 func buildAppleContainerArgs(script Config, args []string, terminal bool) ([]string, error) {
+	if err := validateConfigCapabilities("apple-container", appleContainerCapabilities, script); err != nil {
+		return nil, err
+	}
 	if err := validateMounts(script.Mounts, ","); err != nil {
 		return nil, err
 	}
@@ -127,6 +126,10 @@ func buildAppleContainerArgs(script Config, args []string, terminal bool) ([]str
 	cmdArgs := []string{"run", "--rm"}
 	if terminal {
 		cmdArgs = append(cmdArgs, "-it")
+	}
+
+	if script.Network == "none" {
+		cmdArgs = append(cmdArgs, "--network", "none")
 	}
 
 	for _, mount := range script.Mounts {

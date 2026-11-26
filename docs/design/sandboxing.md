@@ -12,7 +12,7 @@ This document describes the design for running tools in a sandbox environment (D
 
 *   **Environment.** A sandboxed tool receives only the variables listed in the script's `env:` block, plus whatever the container image itself defines, plus a minimal base that a backend must supply for the tool to run at all (`PATH`, `HOME`, and `TERM` when attached to a terminal). The host environment is never inherited or passed through, on any backend. There is no syntax for "pass this host variable through"; a value in `env:` is a literal.
 *   **Filesystem.** A sandboxed tool sees the image's filesystem plus only the host directories listed in `mounts:`.
-*   **Network.** By default, a sandboxed tool keeps the network access of the host environment. A run can declare `network: none` to request that no network access be available. A backend that cannot honour this must fail with an error naming the backend and the reason. The `docker` and `chroot` backends enforce `network: none`; `apple-container` and `proot` reject runs that request it.
+*   **Network.** By default, a sandboxed tool keeps the network access of the host environment. A run can declare `network: none` to request that no network access be available. A backend that cannot honour this must fail with an error naming the backend and the reason. The `docker`, `apple-container` (requires `container` 0.6.0+, verified with 0.10.0), and `chroot` backends enforce `network: none`; `proot` rejects runs that request it.
 *   **Command resolution.** The command to run is chosen identically across all backends (`docker`, `apple-container`, `chroot`, `proot`):
     *   If `entrypoint:` is set in the script configuration, it replaces the image's `ENTRYPOINT`. Any caller arguments follow it. The image's `CMD` is ignored.
     *   If `entrypoint:` is empty:
@@ -160,7 +160,7 @@ Callers can state what the execution will require using `sandbox.WithRequirement
 
 The backends declare the following capabilities:
 *   **`docker`**: Supports mounts, read-only mounts, and no network.
-*   **`apple-container`**: Supports mounts and read-only mounts; does not support no network.
+*   **`apple-container`**: Supports mounts, read-only mounts, and no network.
 *   **`chroot`**: Supports no network; does not support mounts or read-only mounts.
 *   **`proot`**: Supports mounts; does not support read-only mounts (unless fallback is allowed) or no network.
 
@@ -169,6 +169,6 @@ When requirements are stated, `FirstUsable` skips candidate backends that cannot
 ### Platform Limits
 
 *   **`docker`**: Requires a running Docker daemon. Supported on Linux, macOS, and other platforms where Docker is available. Supports `network: none`.
-*   **`apple-container`**: Requires macOS with the `container` CLI installed. Does not support network isolation (`network: none`).
+*   **`apple-container`**: Requires macOS with the `container` CLI installed. Supports `network: none` (added in `container` 0.6.0; verified with `container` 0.10.0; earlier releases treat `none` as a network name).
 *   **`chroot`**: Supported only on Linux; fails on other platforms. Requires root privileges or unprivileged user namespace support. Does not support mounts. Supports `network: none`.
 *   **`proot`**: Requires `proot` installed in `$PATH`. Supported on Linux. Does not support read-only mounts unless fallback is allowed, and does not support network isolation (`network: none`).
